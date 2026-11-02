@@ -14,7 +14,21 @@ import { WebSocket as NodeWebSocket } from 'ws';
 import { SamsungRemote, ConnSnapshot } from '../src/tv/SamsungRemote';
 import { SocketFactory, SocketLike } from '../src/tv/socket';
 import { getArtMode, toggleArtMode } from '../src/tv/art';
-import { getDeviceInfo, launchAppRest } from '../src/tv/rest';
+import { findInstalledId, getAppStatus, getDeviceInfo, launchAppRest } from '../src/tv/rest';
+import {
+  APP_CATALOG,
+  addApp,
+  buttonForInstalledApp,
+  defaultApps,
+  findCatalogApp,
+  isValidAppId,
+  makeCustomApp,
+  moveApp,
+  parseInstalledApps,
+  preferId,
+  removeApp,
+  restoreApps,
+} from '../src/tv/apps';
 import {
   TvConfig,
   artRequestMessage,
@@ -29,7 +43,7 @@ import { TvSocket, TvSocketEvents, TvSocketNative } from '../modules/tv-socket/s
 import { httpProbe, scanForTvs, subnetCandidates, subnetLabel } from '../src/tv/discovery';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { startFakeTv, FAKE_TOKEN, REVOKED_TOKEN } from './fake-tv.mjs';
+import { startFakeTv, FAKE_TOKEN, REVOKED_TOKEN, INSTALLED_APPS } from './fake-tv.mjs';
 
 const SECURE = 28002;
 const PLAIN = 28001;
@@ -43,6 +57,7 @@ const nodeSocket: SocketFactory = (url) => new NodeWebSocket(url, { rejectUnauth
 function runRemote(cfg: TvConfig, token: string | null, createSocket: SocketFactory = nodeSocket) {
   const statuses: ConnSnapshot[] = [];
   const tokens: (string | null)[] = [];
+  const frames: { event: string; data: unknown }[] = [];
   const remote = new SamsungRemote({
     config: cfg,
     token,
@@ -50,6 +65,7 @@ function runRemote(cfg: TvConfig, token: string | null, createSocket: SocketFact
     onStatus: (s) => statuses.push(s),
     onToken: (t) => tokens.push(t),
     onLog: (l) => process.env.VERBOSE && console.log('   log:', l),
+    onFrame: (event, data) => frames.push({ event, data }),
   });
   const waitFor = async (st: ConnSnapshot['status'], ms = 5000) => {
     const t0 = Date.now();
@@ -59,7 +75,7 @@ function runRemote(cfg: TvConfig, token: string | null, createSocket: SocketFact
     }
     throw new Error(`timed out waiting for "${st}"; saw ${statuses.map((s) => s.status).join(' → ')}`);
   };
-  return { remote, statuses, tokens, waitFor };
+  return { remote, statuses, tokens, frames, waitFor };
 }
 
 /** In-memory stand-in for the Swift module: records calls, lets the test emit native events. */
@@ -168,6 +184,81 @@ async function tvSocketWrapperChecks() {
     r.remote.disconnect();
   }
   ok('TvSocket wrapper: events, id filtering, send/close, fatal cert error stops retries');
+}
+
+function appButtonChecks() {
+  // Catalog sanity: unique keys, valid IDs, no ID claimed by two apps.
+  const keys = new Set<string>();
+  const owner = new Map<string, string>();
+  for (const app of APP_CATALOG) {
+    assert.ok(!keys.has(app.key), `duplicate key ${app.key}`);
+    keys.add(app.key);
+    assert.ok(app.ids.length > 0 && /^#[0-9A-Fa-f]{6}$/.test(app.color), app.key);
+    for (const id of app.ids) {
+      assert.ok(isValidAppId(id), `${app.key}: bad id ${id}`);
+      assert.ok(!owner.has(id), `${id} used by ${owner.get(id)} and ${app.key}`);
+      owner.set(id, app.key);
+    }
+  }
+  for (const k of ['netflix', 'youtube', 'prime-video', 'disney-plus']) assert.ok(findCatalogApp(k));
+
+  // IDs: numeric, alphanumeric "xxxxxxxxxx.Name", org.tizen.*; nothing with spaces/slashes.
+  for (const id of ['3201907018807', 'rJeHak5zRg.Spotify', 'org.tizen.browser', '11101200001']) assert.ok(isValidAppId(id), id);
+  for (const id of ['', 'ab', 'has space', '../etc', 'a/b', '.hidden']) assert.ok(!isValidAppId(id), id);
+
+  // Defaults are copies: editing them never mutates the catalog.
+  const d = defaultApps();
+  assert.deepEqual(d.map((a) => a.key), ['netflix', 'youtube', 'prime-video', 'disney-plus']);
+  d[0].ids.push('mutated');
+  assert.ok(!findCatalogApp('netflix')!.ids.includes('mutated'));
+
+  // Custom apps.
+  const c = makeCustomApp('  Crunchyroll ', ' xYzCrunchy1.Crunchyroll ');
+  assert.deepEqual([c.key, c.name, c.ids, c.custom], ['custom:xYzCrunchy1.Crunchyroll', 'Crunchyroll', ['xYzCrunchy1.Crunchyroll'], true]);
+  assert.equal(makeCustomApp('', '3201234567890').name, '3201234567890', 'name falls back to the ID');
+
+  // add / remove / move / preferId.
+  let list = defaultApps();
+  list = addApp(list, makeCustomApp('Netflix again', '3201907018807'));
+  assert.equal(list.length, 4, 'an ID already on a button is not added twice');
+  list = addApp(list, c);
+  assert.equal(list.at(-1)!.key, c.key);
+  assert.deepEqual(moveApp(list, 4, -1).map((a) => a.key)[3], c.key);
+  assert.equal(moveApp(list, 0, -1), list, 'moving the first app up is a no-op');
+  list = removeApp(list, 'youtube');
+  assert.ok(!list.some((a) => a.key === 'youtube'));
+  const disney = findCatalogApp('disney-plus')!;
+  assert.equal(preferId(disney, '3201901017640').ids[0], '3201901017640');
+  assert.equal(preferId(disney, 'not-an-id-of-disney'), disney);
+
+  // Restoring from storage.
+  assert.equal(restoreApps(undefined), null, 'nothing saved → defaults');
+  assert.equal(restoreApps('garbage'), null);
+  assert.deepEqual(restoreApps([]), [], 'an empty list is a valid choice');
+  const restored = restoreApps([
+    { key: 'disney-plus', name: 'Old name', color: '#000000', ids: ['3201901017640', 'stale-id-not-in-catalog'] },
+    { key: c.key, name: c.name, ids: c.ids, color: c.color },
+    { key: 'custom:broken', name: 'x', ids: [] },
+    { key: 'removed-from-catalog', name: 'Gone', ids: ['3201111111111'] },
+    { key: 'disney-plus', name: 'dup', ids: [] },
+    null,
+  ])!;
+  assert.deepEqual(restored.map((a) => a.key), ['disney-plus', c.key]);
+  assert.equal(restored[0].name, 'Disney+', 'catalog name wins');
+  assert.equal(restored[0].ids[0], '3201901017640', 'saved (TV-confirmed) order kept');
+  assert.ok(!restored[0].ids.includes('stale-id-not-in-catalog'));
+  assert.deepEqual([...restored[0].ids].sort(), [...disney.ids].sort(), 'gains catalog IDs added later');
+
+  // The TV's own app list.
+  const installed = parseInstalledApps({ data: INSTALLED_APPS });
+  assert.deepEqual(installed.map((a) => a.name), ['Crunchyroll', 'Disney+', 'Netflix', 'YouTube'], 'sorted; invalid IDs dropped');
+  assert.deepEqual(parseInstalledApps(undefined), []);
+  assert.deepEqual(parseInstalledApps({ data: 'nope' }), []);
+  const fromTv = installed.map(buttonForInstalledApp);
+  const disneyBtn = fromTv.find((b) => b.key === 'disney-plus')!;
+  assert.equal(disneyBtn.ids[0], '3202204027038', 'known app → catalog entry, reported ID first');
+  assert.equal(fromTv.find((b) => b.name === 'Crunchyroll')!.key, 'custom:xYzCrunchy1.Crunchyroll', 'unknown app → custom');
+  ok('app buttons: catalog, custom apps, add/remove/move, restore, TV app list');
 }
 
 async function discoveryChecks() {
@@ -316,6 +407,29 @@ async function fakeTvChecks() {
   assert.equal(await launchAppRest(cfg, 'bogus'), false);
   ok('device info + REST app launch');
 
+  // App status checks (GET /api/v2/applications/<id>).
+  assert.equal(await getAppStatus(cfg, '3201907018807'), 'installed');
+  assert.equal(await getAppStatus(cfg, '3201601007625'), 'missing');
+  assert.equal(await getAppStatus({ tvIp: '127.0.0.1', httpPort: 1 }, '3201907018807', 500), 'unknown', 'TV unreachable is not "missing"');
+  assert.deepEqual(await findInstalledId(cfg, findCatalogApp('disney-plus')!.ids), { status: 'installed', id: '3202204027038' });
+  assert.deepEqual(await findInstalledId(cfg, ['3201601007625']), { status: 'missing' });
+  ok('app status: installed / missing / unknown; first installed ID wins');
+
+  // The TV's installed-app list over the remote socket.
+  {
+    const r = runRemote(cfg, token);
+    r.remote.connect();
+    await r.waitFor('connected', 1000);
+    assert.equal(r.remote.requestInstalledApps(), true);
+    const t0 = Date.now();
+    while (!r.frames.some((f) => f.event === 'ed.installedApp.get') && Date.now() - t0 < 2000) await sleep(20);
+    const frame = r.frames.find((f) => f.event === 'ed.installedApp.get');
+    assert.ok(frame, 'TV answered ed.installedApp.get');
+    assert.equal(parseInstalledApps(frame!.data).length, 4);
+    r.remote.disconnect();
+    ok('installed-app list arrives over the remote socket and parses');
+  }
+
   // The scan's probe recognises the (fake) Frame.
   const probed = await httpProbe(900, PLAIN)('127.0.0.1');
   assert.equal(probed?.modelName, 'QN55LS03BAFXZA');
@@ -341,6 +455,7 @@ async function fakeTvChecks() {
 
 async function main() {
   protocolChecks();
+  appButtonChecks();
   await tvSocketWrapperChecks();
   await discoveryChecks();
   await fakeTvChecks();

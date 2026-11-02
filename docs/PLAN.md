@@ -119,3 +119,23 @@ AltStore's own site, faq.altstore.io, is blocked from this sandbox. The points b
   - subnet candidates;
   - concurrency cap, progress, sort and cancel;
   - probe against the fake TV, a non-TV JSON server, a closed port and a silent host.
+
+## Addendum: customisable app buttons
+- **Model (`src/tv/apps.ts`, pure):**
+  - `TvApp { key, name, ids[], color, custom? }`;
+  - `APP_CATALOG`, about 33 apps; IDs cross-checked from community lists, newest-first for 2020+ TVs, with no ID shared between apps;
+  - custom apps are `custom:<id>`;
+  - helpers for add (no duplicates by key or ID), remove, move, `preferId`, `restoreApps` and `parseInstalledApps`.
+- **Restoring saved buttons:** catalogue entries take the current catalogue's name and colour, keep the saved (TV-confirmed) ID order, and gain IDs added to the catalogue later.
+- **Storage:** `settings.apps`; older installs get the default four.
+- **Checking an app:** `GET /api/v2/applications/<id>` gives 200 = installed, 404 = missing, anything else = unknown (never treated as missing). `findInstalledId` tries IDs in order; a confirmed ID is moved first and saved.
+- **The TV's app list:** `ed.installedApp.get` over the remote socket; a 6 s timeout means unsupported. Known IDs map to catalogue entries, everything else becomes a custom app.
+- **UI:**
+  - `AppRow` is a horizontal scroll strip plus an Edit chip; long-press opens the editor.
+  - `AppsModal` has Your buttons (status, reorder, remove), On your TV, Add any app, Add from list (search), and Reset.
+  - The old "Log installed apps" button in TV setup was removed.
+- **Tests (`npm test`):**
+  - catalogue sanity; add/remove/move/preferId;
+  - restore edge cases and app-list parsing;
+  - app status against the fake TV, including unreachable = unknown;
+  - the app-list round trip over the socket.

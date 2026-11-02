@@ -46,6 +46,38 @@ export async function getDeviceInfo(cfg: TvConfig, timeoutMs = 4_000): Promise<D
   };
 }
 
+export type AppStatus = 'installed' | 'missing' | 'unknown';
+
+/**
+ * GET /api/v2/applications/<id>: 200 = installed, 404 = not installed. Anything else (timeout,
+ * TV off, firmware that doesn't implement it) is 'unknown', which callers must not treat as missing.
+ */
+export async function getAppStatus(cfg: TvConfig, appId: string, timeoutMs = 2_500): Promise<AppStatus> {
+  try {
+    const res = await fetchWithTimeout(`${httpBase(cfg)}/api/v2/applications/${encodeURIComponent(appId)}`, {}, timeoutMs);
+    if (res.status === 200) return 'installed';
+    if (res.status === 404) return 'missing';
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/** Check an app's candidate IDs in order; the first installed one wins. */
+export async function findInstalledId(
+  cfg: TvConfig,
+  ids: string[],
+  timeoutMs?: number,
+): Promise<{ status: AppStatus; id?: string }> {
+  let sawUnknown = false;
+  for (const id of ids) {
+    const s = await getAppStatus(cfg, id, timeoutMs);
+    if (s === 'installed') return { status: 'installed', id };
+    if (s === 'unknown') sawUnknown = true;
+  }
+  return { status: sawUnknown ? 'unknown' : 'missing' };
+}
+
 /** REST app launch. Fire-and-forget: many 2022+ sets ignore it, some only honour this. */
 export async function launchAppRest(cfg: TvConfig, appId: string): Promise<boolean> {
   try {

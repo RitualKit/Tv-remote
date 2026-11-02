@@ -8,9 +8,10 @@ It has:
 - D-pad, Back, Home, Menu, Source, Info, Guide
 - volume and channel, with repeat-while-held
 - mute and Power (tap toggles Art↔TV, hold turns the TV off), plus an Art/TV button
-- a collapsible number pad and Netflix / YouTube / Prime / Disney+ shortcuts
+- a collapsible number pad and app shortcuts (Netflix / YouTube / Prime Video / Disney+ by default)
 - haptics, a connection status pill and auto-reconnect
 - finds the TV on your Wi-Fi automatically (subnet scan), or takes a typed IP
+- customisable app buttons: pick from the TV's own app list or a built-in catalogue, or add any app by ID
 
 Research and design decisions are in [docs/PLAN.md](docs/PLAN.md).
 
@@ -91,6 +92,22 @@ Pushing a tag `v*` also triggers a build.
 To **update**, build a new `.ipa` and install it the same way. The pairing token and the TV's
 certificate fingerprint are kept.
 
+## Customising the app buttons
+
+Tap **Edit** at the end of the app row, or long-press any app button.
+- **Your buttons:** each shows **On TV** or **Not found**, based on asking the TV about that app's ID.
+  - A grey **?** means the TV couldn't be asked, e.g. it's off. Tap a badge to check again.
+  - Reorder with ⌃ ⌄, remove with ✕.
+- **On your TV:** **Load apps from TV** asks the TV for its installed apps; tap **+** to add one.
+  Not every model answers this request. If yours doesn't, use the next two options.
+- **Add any app:** a button name plus the app's Samsung ID. You can get IDs from the list above,
+  or on your PC with `npm run probe -- <tv-ip> --apps`.
+- **Add from list:** a searchable catalogue of about 30 common apps, with known IDs for different
+  TV years. When the TV confirms one of an app's IDs, that ID is used first from then on.
+- **Reset to default buttons** restores Netflix, YouTube, Prime Video and Disney+.
+
+Your buttons are saved with the rest of the settings, and kept across AltStore updates.
+
 ## Making changes
 
 There is only a release build, so **every change has to go through a new CI build and an
@@ -139,8 +156,8 @@ AltStore reinstall** before it reaches the phone. To save builds:
   **Reset TV certificate**.
 - **Art button flips power instead of art**: your firmware's Art API didn't answer, so the app
   falls back to a power-key tap. `npm run probe -- <ip> --art` shows what the API returns.
-- **An app button does nothing**: app IDs vary by region. Use `npm run probe -- <ip> --apps`, or
-  ⚙︎ → *Log installed apps*, then update `src/tv/keys.ts`.
+- **An app button does nothing**: open **Edit**. If the app shows **Not found**, its ID differs on
+  your TV. Remove it and re-add it from **On your TV**, or add it by ID (`npm run probe -- <ip> --apps`).
 - **CI build failed**: the run uploads `xcodebuild-log`, and the step output shows the first
   `error:` lines.
 
@@ -148,7 +165,7 @@ AltStore reinstall** before it reaches the phone. To save builds:
 
 ```bash
 npm run typecheck
-npm test    # protocol, TvSocket wrapper, discovery scan, app connection code against a fake self-signed Frame (needs openssl)
+npm test    # protocol, app buttons, TvSocket wrapper, discovery scan, app connection code against a fake self-signed Frame (needs openssl)
 ```
 GitHub Actions runs both before every macOS build.
 
@@ -165,9 +182,10 @@ src/tv/art.ts                  Art Mode channel
 src/tv/rest.ts                 /api/v2/ device info, REST app launch
 src/tv/discovery.ts            Wi-Fi subnet scan for Samsung TVs (pure; probe injected)
 src/useTvScan.ts               scan hook: phone IP via expo-network, progress, results
-src/tv/keys.ts                 KEY_* codes, app IDs
+src/tv/keys.ts                 KEY_* codes
+src/tv/apps.ts                 app catalogue + button list logic (pure)
 src/useRemote.ts               React hook: settings, cert pinning, AppState reconnect, actions
-src/ui/*                       buttons, D-pad, number pad, status pill, setup sheet
+src/ui/*                       buttons, D-pad, number pad, status pill, setup sheet, app-button editor
 tools/probe.mjs                TV diagnostics from a PC
 test/                          fake TV + end-to-end checks
 .github/workflows/ios-ipa.yml  unsigned IPA build

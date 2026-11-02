@@ -11,6 +11,7 @@ import { NumberPad } from './src/ui/NumberPad';
 import { StatusPill } from './src/ui/StatusPill';
 import { AppRow } from './src/ui/AppRow';
 import { SetupModal } from './src/ui/SetupModal';
+import { AppsModal } from './src/ui/AppsModal';
 import { colors } from './src/ui/theme';
 
 const DPAD_KEYS = { up: KEYS.up, down: KEYS.down, left: KEYS.left, right: KEYS.right, ok: KEYS.ok } as const;
@@ -18,6 +19,7 @@ const DPAD_KEYS = { up: KEYS.up, down: KEYS.down, left: KEYS.left, right: KEYS.r
 function Remote() {
   const r = useRemote();
   const [setupOpen, setSetupOpen] = useState(false);
+  const [appsOpen, setAppsOpen] = useState(false);
 
   // First launch: nothing configured yet → open setup.
   useEffect(() => {
@@ -83,10 +85,21 @@ function Remote() {
           <Rocker label="CH" onUp={() => r.key(KEYS.chUp)} onDown={() => r.key(KEYS.chDown)} upIcon="chevron-up" downIcon="chevron-down" />
         </View>
 
-        <AppRow onLaunch={r.launch} />
+        <AppRow apps={r.settings.apps} onLaunch={r.launch} onEdit={() => setAppsOpen(true)} />
 
         <NumberPad onKey={r.key} />
       </ScrollView>
+
+      <AppsModal
+        visible={appsOpen}
+        apps={r.settings.apps}
+        tvIp={r.settings.tvIp}
+        onClose={() => setAppsOpen(false)}
+        onChange={r.setApps}
+        onCheck={r.checkApp}
+        tvApps={r.tvApps}
+        onLoadTvApps={r.loadTvApps}
+      />
 
       <SetupModal
         visible={setupOpen}
@@ -96,7 +109,6 @@ function Remote() {
         onSaveTvIp={r.saveTvIp}
         onForgetPairing={r.forgetPairing}
         onResetCertificate={r.resetCertificate}
-        onRequestApps={r.requestApps}
       />
     </SafeAreaView>
   );

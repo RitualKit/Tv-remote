@@ -16,7 +16,6 @@ interface Props {
   onSaveTvIp: (ip: string) => void;
   onForgetPairing: () => void;
   onResetCertificate: () => void;
-  onRequestApps: () => void;
 }
 
 export function SetupModal({
@@ -27,7 +26,6 @@ export function SetupModal({
   onSaveTvIp,
   onForgetPairing,
   onResetCertificate,
-  onRequestApps,
 }: Props) {
   const [tvIp, setTvIp] = useState(settings.tvIp);
   const [test, setTest] = useState<string | null>(null);
@@ -163,9 +161,6 @@ export function SetupModal({
             <View style={styles.actions}>
               <RemoteButton label="Forget pairing" onPress={onForgetPairing} style={styles.flex} />
               <RemoteButton label="Reset TV certificate" onPress={onResetCertificate} style={styles.flex} />
-            </View>
-            <View style={styles.actions}>
-              <RemoteButton label="Log installed apps" onPress={onRequestApps} style={styles.flex} />
             </View>
 
             <Text style={styles.label}>Debug log</Text>

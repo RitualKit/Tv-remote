@@ -8,7 +8,15 @@ import { WebSocketServer } from 'ws';
 export const FAKE_TOKEN = 'tok-12345';
 /** A token the TV no longer accepts → ms.channel.unauthorized. */
 export const REVOKED_TOKEN = 'tok-revoked';
-export const KNOWN_APPS = new Set(['3201907018807', '111299001912']);
+export const KNOWN_APPS = new Set(['3201907018807', '111299001912', '3202204027038']);
+/** What the fake TV reports for ed.installedApp.get (shape as on real TVs). */
+export const INSTALLED_APPS = [
+  { appId: '3201907018807', app_type: 2, name: 'Netflix', icon: '/opt/netflix.png' },
+  { appId: '111299001912', app_type: 2, name: 'YouTube', icon: '/opt/yt.png' },
+  { appId: '3202204027038', app_type: 2, name: 'Disney+', icon: '' },
+  { appId: 'xYzCrunchy1.Crunchyroll', app_type: 4, name: 'Crunchyroll', icon: '' },
+  { appId: 'bad id with spaces', name: 'Broken' },
+];
 
 export function startFakeTv({ key, cert, securePort, plainPort }) {
   const state = { received: [], artMode: 'off', launches: [] };
@@ -26,6 +34,12 @@ export function startFakeTv({ key, cert, securePort, plainPort }) {
       state.launches.push(m[1]);
       res.writeHead(KNOWN_APPS.has(m[1]) ? 200 : 404);
       return res.end();
+    }
+    if (m && req.method === 'GET') {
+      // App status: 200 + JSON for installed apps, 404 otherwise (like the real TV).
+      if (!KNOWN_APPS.has(m[1])) return res.writeHead(404).end();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ id: m[1], name: 'App', running: false, visible: false, version: '1.0' }));
     }
     res.writeHead(404);
     res.end();
@@ -52,7 +66,18 @@ export function startFakeTv({ key, cert, securePort, plainPort }) {
         // simulate the user pressing "Allow" after a moment
         setTimeout(() => ws.send(JSON.stringify({ event: 'ms.channel.connect', data: { id: 'c1', token: FAKE_TOKEN } })), 300);
       }
-      ws.on('message', (d) => state.received.push({ name, msg: JSON.parse(d.toString()) }));
+      ws.on('message', (d) => {
+        const msg = JSON.parse(d.toString());
+        state.received.push({ name, msg });
+        if (msg.method === 'ms.channel.emit' && msg.params?.event === 'ed.installedApp.get') {
+          ws.send(
+            JSON.stringify({
+              event: 'ed.installedApp.get',
+              data: { data: INSTALLED_APPS },
+            }),
+          );
+        }
+      });
     } else if (u.pathname.endsWith('com.samsung.art-app')) {
       ws.send(JSON.stringify({ event: 'ms.channel.connect', data: {} }));
       ws.send(JSON.stringify({ event: 'ms.channel.ready', data: {} }));
