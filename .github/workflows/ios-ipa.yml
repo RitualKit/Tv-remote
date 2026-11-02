@@ -1,29 +1,21 @@
-# Builds an UNSIGNED iOS .ipa on a GitHub macOS runner (no Mac or paid Apple account needed).
-# Sideloadly re-signs it with your Apple ID when you install it.
+# Builds an UNSIGNED iOS .ipa of Frame Remote on a GitHub macOS runner (no Mac or paid Apple
+# account needed). AltStore re-signs it with your Apple ID when you install it on the iPhone.
 #
-# Run it: GitHub → Actions → "iOS IPA (for Sideloadly)" → Run workflow → pick a variant.
-#   dev      → "Frame Remote (Dev)": dev client that loads JS from `npx expo start` on your PC.
-#              Rebuild only when native code / native dependencies change.
-#   release  → "Frame Remote": JS bundled in, works with the PC off. Also built for tags v*.
+# Run it: GitHub → Actions → "iOS IPA (for AltStore)" → Run workflow. Pushing a tag v* also builds.
+# Download the "FrameRemote-ipa" artifact from the run page and unzip it to get FrameRemote.ipa.
 #
 # Cost: this repo is private, so macOS minutes count 10x against the free 2,000/month
 # (~200 macOS minutes ≈ 8 builds). The cheap Linux "checks" job runs first so a broken commit
 # never reaches the macOS job.
-name: iOS IPA (for Sideloadly)
+name: iOS IPA (for AltStore)
 
 on:
   workflow_dispatch:
-    inputs:
-      variant:
-        description: 'dev = dev client, release = standalone app'
-        type: choice
-        options: [dev, release]
-        default: dev
   push:
     tags: ['v*']
 
 concurrency:
-  group: ios-ipa-${{ github.ref }}-${{ inputs.variant || 'release' }}
+  group: ios-ipa-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -45,10 +37,6 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     env:
-      APP_VARIANT: ${{ inputs.variant || 'release' }}
-      # Compile the dev-client network inspector out: it hooks URLSession, and the TV socket
-      # needs its own certificate handling. (TvSocket also avoids it by using .ephemeral.)
-      EX_DEV_CLIENT_NETWORK_INSPECTOR: 'false'
       CI: '1'
     steps:
       - uses: actions/checkout@v4
@@ -81,17 +69,16 @@ jobs:
         working-directory: ios
         run: pod install
 
-      - name: Build (unsigned)
+      - name: Build Release (unsigned)
         run: |
           mkdir -p build
           WORKSPACE=$(ls -d ios/*.xcworkspace | head -n1)
           SCHEME=$(basename "$WORKSPACE" .xcworkspace)
-          if [ "$APP_VARIANT" = dev ]; then CONFIG=Debug; else CONFIG=Release; fi
-          echo "workspace=$WORKSPACE scheme=$SCHEME configuration=$CONFIG"
+          echo "workspace=$WORKSPACE scheme=$SCHEME"
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
-            -configuration "$CONFIG" \
+            -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/DerivedData \
@@ -111,18 +98,18 @@ jobs:
         run: |
           APP=$(find build/DerivedData/Build/Products -maxdepth 2 -name '*.app' -type d | head -n1)
           echo "app=$APP"
-          if [ "$APP_VARIANT" = release ] && [ ! -f "$APP/main.jsbundle" ]; then
-            echo "::error::release build has no embedded JS bundle"; exit 1
+          if [ ! -f "$APP/main.jsbundle" ]; then
+            echo "::error::Release build has no embedded JS bundle"; exit 1
           fi
           mkdir -p build/Payload
           cp -R "$APP" build/Payload/
-          (cd build && zip -qry "FrameRemote-$APP_VARIANT.ipa" Payload)
-          ls -lh build/*.ipa
+          (cd build && zip -qry FrameRemote.ipa Payload)
+          ls -lh build/FrameRemote.ipa
 
       - uses: actions/upload-artifact@v4
         with:
-          name: FrameRemote-${{ env.APP_VARIANT }}-ipa
-          path: build/FrameRemote-*.ipa
+          name: FrameRemote-ipa
+          path: build/FrameRemote.ipa
           retention-days: 30
           if-no-files-found: error
 

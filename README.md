@@ -1,8 +1,8 @@
 # Frame Remote
 
 An iPhone remote for a Samsung **The Frame** (2022+). It's an Expo / React Native app, built in
-the cloud as an unsigned `.ipa` and installed with **Sideloadly** from a Windows PC. No Mac and
-no paid Apple account are needed.
+the cloud as an unsigned `.ipa` and installed with **AltStore** from a Windows PC. No Mac and no
+paid Apple account are needed.
 
 It has:
 - D-pad, Back, Home, Menu, Source, Info, Guide
@@ -30,22 +30,31 @@ That's why this app needs a real build and doesn't run in Expo Go.
 
 ## One-time setup
 
-**Windows PC**
-- [Node.js 22 LTS](https://nodejs.org) and Git.
-- **iTunes** and **iCloud**. Sideloadly expects Apple's own installers rather than the Microsoft
-  Store versions; check [sideloadly.io](https://sideloadly.io) for the current requirement.
-- [Sideloadly](https://sideloadly.io).
+### Windows PC
+1. Install **iTunes** and **iCloud** from **Apple's website**, not the Microsoft Store. If the
+   Store versions are installed, uninstall them first.
+2. Open iTunes, sign in with your Apple ID, and connect the iPhone by USB. Tap **Trust** on the
+   phone.
+3. In iTunes, on the iPhone's summary page, turn on **"Sync with this iPhone over Wi-Fi"**. That
+   lets AltStore refresh without a cable.
+4. Install **AltServer** for Windows from [altstore.io](https://altstore.io).
+   - Run it **as administrator**.
+   - Allow it through Windows Firewall on **private networks**.
+5. Click the AltServer tray icon → **Install AltStore** → pick your iPhone → enter your Apple ID.
 
-**iPhone**
-- Settings → Privacy & Security → **Developer Mode** → on, then restart. This is required on iOS 16+.
-  The switch only appears after the first sideload attempt.
+### iPhone
+1. Settings → Privacy & Security → **Developer Mode** → on, then restart. This is required on iOS 16+.
+2. Settings → General → **VPN & Device Management** → your Apple ID → **Trust**.
+3. Open AltStore once to confirm it launches.
 
-**TV**
+### TV
 - Settings → General → External Device Manager → **Device Connection Manager** →
   Access Notification: *First Time Only*.
 - Reserve the TV's IP in your router, so it doesn't change.
 
-## 0. Check the TV from your PC (optional, no iPhone needed)
+## Check the TV from your PC (optional, no iPhone needed)
+
+Needs [Node.js 22 LTS](https://nodejs.org) and Git.
 
 ```powershell
 npm install
@@ -53,61 +62,63 @@ npm run probe -- 192.168.1.50 --art --apps     # press Allow on the TV
 ```
 You should see `ms.channel.connect`, the volume moves, and Art Mode status and installed apps print.
 
-## 1. Build the .ipa (GitHub Actions)
+## Build the .ipa (GitHub Actions)
 
-GitHub → **Actions** → **iOS IPA (for Sideloadly)** → **Run workflow**, then pick a variant:
+1. GitHub → **Actions** → **iOS IPA (for AltStore)** → **Run workflow**.
+2. When it finishes (~15–25 min), download the **FrameRemote-ipa** artifact from the run page
+   and unzip it to get `FrameRemote.ipa`.
 
-| Variant | Installs as | Use it for |
-|---|---|---|
-| `dev` | Frame Remote (Dev) | development: loads JS live from `npx expo start` on your PC |
-| `release` | Frame Remote | everyday use: JS bundled in, works with the PC off |
-
-When the run finishes (~15–25 min), download the artifact zip from the run page and extract
-`FrameRemote-<variant>.ipa`. Pushing a tag `v*` also builds `release`.
+Pushing a tag `v*` also triggers a build.
 
 > The repo is private, so macOS runner minutes count 10× against GitHub's free 2,000/month,
-> which is about 8 builds. You only need a new build when native code or native dependencies change.
+> which is about **8 builds**. A cheap Linux job runs the tests first, so broken commits don't
+> use macOS minutes.
 
-## 2. Install with Sideloadly
+## Install (and update) with AltStore
 
-1. Connect the iPhone by USB, unlock it, and tap **Trust** if asked.
-2. In Sideloadly, drag the `.ipa` in, enter your Apple ID, then click **Start**. Enter the 2FA code if asked.
-3. On the iPhone: Settings → General → **VPN & Device Management** → your Apple ID → **Trust**.
-4. Open the app. Allow **Local Network**, enter the TV IP, choose **Save & connect**, then
+1. Put `FrameRemote.ipa` where the iPhone's **Files** app can see it. The easiest way is to drop
+   it into **iCloud Drive** on the PC (iCloud for Windows is already installed). Downloading the
+   artifact in Safari on the phone also works.
+2. On the iPhone: AltStore → **My Apps** → **+** (top left) → pick `FrameRemote.ipa`. Keep the PC
+   with AltServer on and on the same Wi-Fi while it installs.
+3. Open Frame Remote, allow **Local Network**, enter the TV's IP, tap **Save & connect**, and
    press **Allow** on the TV.
 
-The pairing token and the TV's certificate fingerprint are saved. Reinstalling the same variant
-keeps them.
+To **update**, build a new `.ipa` and install it the same way. The pairing token and the TV's
+certificate fingerprint are kept.
 
-## 3. Develop with the dev build
+## Making changes
 
-```powershell
-npm install
-npx expo start          # scan the QR with the iPhone Camera → opens "Frame Remote (Dev)"
-```
-The phone and PC must be on the same Wi-Fi. JS and UI changes reload live, so no rebuild or CI
-minutes are needed. Native changes (`modules/`, new native packages, `app.config.ts`) need a new
-`dev` build.
+There is only a release build, so **every change has to go through a new CI build and an
+AltStore reinstall** before it reaches the phone. To save builds:
+- run `npm run typecheck` and `npm test` first;
+- use `npm run probe` to try TV behaviour from the PC;
+- group several changes into one build.
 
-## Free Apple ID limits (7 days)
+## Free Apple ID limits
 
-- Sideloaded apps **stop opening after 7 days**. To renew, either:
-  - turn on Sideloadly's **auto-refresh**, which re-signs over Wi-Fi while the PC and Sideloadly
-    are running (see its FAQ for the exact requirements); or
-  - re-sideload the same `.ipa` with Sideloadly. That takes about a minute, and app data is kept.
-- At most **3** sideloaded apps at once; the dev and release variants use 2.
-- About **10 new App IDs per week**. Reinstalling the same bundle ID doesn't use a new one.
+- **7 days.** Sideloaded apps stop opening after a week unless refreshed.
+  - AltStore refreshes in the background when AltServer is running on a PC on the same Wi-Fi.
+  - You can also tap **Refresh All** in AltStore → My Apps.
+  - App data is kept across refreshes.
+- **3 active apps, and AltStore counts as one.** AltStore + Frame Remote = 2.
+- **About 10 App IDs per 7 days.** Reinstalling Frame Remote reuses its ID.
 - Wake-on-LAN and auto-discovery are impossible: iOS reserves broadcast/multicast UDP for apps
   with an Apple-approved entitlement. Enter the IP by hand, and use the physical remote when the
   TV is fully off. Art Mode → TV works fine.
 
 ## Troubleshooting
 
-- **"Untrusted Developer" or the app won't open**: trust the profile under VPN & Device
-  Management, and check that Developer Mode is on.
-- **"Maximum App ID limit reached"**: wait for the weekly reset, or reuse a bundle ID you already
-  installed.
-- **App stopped opening after a week**: re-sideload (see above).
+- **AltStore can't find AltServer / refresh fails**: check that
+  - AltServer is running (as admin) and allowed through the firewall on private networks;
+  - iTunes Wi-Fi sync is on;
+  - the phone and PC are on the same Wi-Fi.
+  
+  If it still fails, refresh over USB.
+- **"Untrusted Developer" or apps won't open**: trust your Apple ID under VPN & Device Management,
+  and check that Developer Mode is on.
+- **"Maximum App ID limit reached"**: wait for the weekly reset.
+- **App stopped opening after a week**: refresh in AltStore with AltServer reachable.
 - **"Not reachable" in Test**:
   - check iOS Settings → Privacy & Security → **Local Network** → Frame Remote;
   - the phone must be on the same Wi-Fi, with no guest network, client isolation or VPN;
@@ -120,7 +131,7 @@ minutes are needed. Native changes (`modules/`, new native packages, `app.config
   falls back to a power-key tap. `npm run probe -- <ip> --art` shows what the API returns.
 - **An app button does nothing**: app IDs vary by region. Use `npm run probe -- <ip> --apps`, or
   ⚙︎ → *Log installed apps*, then update `src/tv/keys.ts`.
-- **CI build failed**: the run uploads `xcodebuild-log`, and the step summary shows the first
+- **CI build failed**: the run uploads `xcodebuild-log`, and the step output shows the first
   `error:` lines.
 
 ## Checks
@@ -135,7 +146,7 @@ GitHub Actions runs both before every macOS build.
 
 ```
 App.tsx                        the one screen
-app.config.ts                  dev/release variants, iOS Info.plist (Local Network, ATS)
+app.config.ts                  app name/bundle ID, iOS Info.plist (Local Network, ATS)
 modules/tv-socket/ios/*.swift  native wss socket: LAN-only self-signed trust + cert pinning
 modules/tv-socket/src/         WebSocket-shaped JS wrapper (TvSocket)
 src/tv/protocol.ts             URLs + message builders/parsers (pure)

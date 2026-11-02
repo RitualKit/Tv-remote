@@ -132,8 +132,8 @@ final class TvSocketConnection: NSObject, URLSessionWebSocketDelegate {
 
   func start() {
     dispatchQueue.async {
-      // `.ephemeral`, not `.default`: no cookies/cache, and the dev-client network inspector only
-      // hooks `.default`, so it can't interfere with the certificate handling below.
+      // `.ephemeral`: no cookies, cache or credential storage for the TV connection, and
+      // nothing that hooks `URLSessionConfiguration.default` can interfere with the trust handling below.
       let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: self.operationQueue)
       let task = session.webSocketTask(with: self.url)
       task.maximumMessageSize = 8 * 1024 * 1024
