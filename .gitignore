@@ -40,5 +40,5 @@ yarn-error.*
 /ios
 /android
 
-# relay pairing token from probe.mjs
-relay/.token
+# pairing token saved by tools/probe.mjs
+tools/.token

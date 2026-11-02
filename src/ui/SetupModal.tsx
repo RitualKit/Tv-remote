@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ConnectionMode, DEFAULT_RELAY_PORT } from '../tv/protocol';
+import { isPrivateIPv4 } from '../tv/protocol';
 import { getDeviceInfo } from '../tv/rest';
 import { Settings } from '../storage';
 import { RemoteButton } from './RemoteButton';
@@ -12,47 +12,52 @@ interface Props {
   settings: Settings;
   log: string[];
   onClose: () => void;
-  onSave: (patch: Partial<Settings>) => void;
+  onSaveTvIp: (ip: string) => void;
   onForgetPairing: () => void;
+  onResetCertificate: () => void;
   onRequestApps: () => void;
 }
 
-export function SetupModal({ visible, settings, log, onClose, onSave, onForgetPairing, onRequestApps }: Props) {
+export function SetupModal({
+  visible,
+  settings,
+  log,
+  onClose,
+  onSaveTvIp,
+  onForgetPairing,
+  onResetCertificate,
+  onRequestApps,
+}: Props) {
   const [tvIp, setTvIp] = useState(settings.tvIp);
-  const [mode, setMode] = useState<ConnectionMode>(settings.mode);
-  const [relayHost, setRelayHost] = useState(settings.relayHost);
   const [test, setTest] = useState<string | null>(null);
 
   useEffect(() => {
     if (visible) {
       setTvIp(settings.tvIp);
-      setMode(settings.mode);
-      setRelayHost(settings.relayHost);
       setTest(null);
     }
-  }, [visible, settings.tvIp, settings.mode, settings.relayHost]);
+  }, [visible, settings.tvIp]);
+
+  const validIp = isPrivateIPv4(tvIp);
 
   const runTest = async () => {
     setTest('Testing…');
     try {
-      const info = await getDeviceInfo({ tvIp, mode, relayHost });
+      const info = await getDeviceInfo({ tvIp });
       setTest(
         `✓ ${info.name ?? 'TV'} ${info.modelName ? `(${info.modelName})` : ''}\n` +
-          `Frame: ${info.frameTv ? 'yes' : 'no'} · Token auth: ${info.tokenAuth ? 'yes' : 'no'} · Power: ${info.powerState ?? '?'}` +
-          (mode === 'direct' && info.tokenAuth ? '\nThis TV uses token auth → it will likely need Relay mode.' : ''),
+          `Frame: ${info.frameTv ? 'yes' : 'no'} · Token auth: ${info.tokenAuth ? 'yes' : 'no'} · Power: ${info.powerState ?? '?'}`,
       );
     } catch (e) {
       setTest(
         `✗ Not reachable (${(e as Error).message}).\n` +
-          (mode === 'relay'
-            ? 'Is relay.mjs running, and is the relay address right?'
-            : 'Same Wi-Fi? TV on or in Art Mode? iOS: Local Network allowed for Expo Go?'),
+          'Same Wi-Fi? TV on or in Art Mode? Local Network allowed for Frame Remote (iOS Settings → Privacy & Security)?',
       );
     }
   };
 
   const save = () => {
-    onSave({ tvIp: tvIp.trim(), mode, relayHost: relayHost.trim() });
+    onSaveTvIp(tvIp);
     onClose();
   };
 
@@ -77,48 +82,35 @@ export function SetupModal({ visible, settings, log, onClose, onSave, onForgetPa
               autoCorrect={false}
               style={styles.input}
             />
-            <Text style={styles.hint}>TV: Settings → General → Network → Network Status → IP Settings</Text>
-
-            <Text style={styles.label}>Connection</Text>
-            <View style={styles.segment}>
-              {(['relay', 'direct'] as const).map((m) => (
-                <Pressable key={m} onPress={() => setMode(m)} style={[styles.segBtn, mode === m && styles.segOn]}>
-                  <Text style={[styles.segText, mode === m && styles.segTextOn]}>
-                    {m === 'relay' ? 'Via relay (2022+)' : 'Direct :8001'}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            {mode === 'relay' && (
-              <>
-                <Text style={styles.label}>Relay address</Text>
-                <TextInput
-                  value={relayHost}
-                  onChangeText={setRelayHost}
-                  placeholder={`192.168.1.20:${DEFAULT_RELAY_PORT}`}
-                  placeholderTextColor={colors.textDim}
-                  keyboardType="url"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  style={styles.input}
-                />
-                <Text style={styles.hint}>
-                  The computer/Pi running `node relay/relay.mjs`. Port defaults to {DEFAULT_RELAY_PORT}.
-                </Text>
-              </>
-            )}
+            <Text style={[styles.hint, tvIp.length > 0 && !validIp && styles.bad]}>
+              {tvIp.length > 0 && !validIp
+                ? 'Enter a home-network address like 192.168.x.x, 10.x.x.x or 172.16–31.x.x.'
+                : 'TV: Settings → General → Network → Network Status → IP Settings'}
+            </Text>
 
             <View style={styles.actions}>
               <RemoteButton label="Test" onPress={runTest} style={styles.flex} />
-              <RemoteButton label="Save & connect" onPress={save} color={colors.accent} style={styles.flex} />
+              <RemoteButton
+                label="Save & connect"
+                onPress={validIp ? save : () => {}}
+                color={validIp ? colors.accent : colors.button}
+                style={styles.flex}
+              />
             </View>
             {test && <Text style={styles.test}>{test}</Text>}
 
             <Text style={styles.label}>Pairing</Text>
-            <Text style={styles.hint}>{settings.token ? 'Paired (token saved).' : 'Not paired yet — TV will ask to Allow.'}</Text>
+            <Text style={styles.hint}>{settings.token ? 'Paired (token saved).' : 'Not paired yet — the TV will ask you to Allow.'}</Text>
+            <Text style={styles.hint}>
+              {settings.certSha256
+                ? `TV certificate pinned: ${settings.certSha256.slice(0, 16)}…`
+                : 'TV certificate: pinned automatically on first connect.'}
+            </Text>
             <View style={styles.actions}>
               <RemoteButton label="Forget pairing" onPress={onForgetPairing} style={styles.flex} />
+              <RemoteButton label="Reset TV certificate" onPress={onResetCertificate} style={styles.flex} />
+            </View>
+            <View style={styles.actions}>
               <RemoteButton label="Log installed apps" onPress={onRequestApps} style={styles.flex} />
             </View>
 
@@ -149,6 +141,7 @@ const styles = StyleSheet.create({
   body: { paddingHorizontal: 20, paddingBottom: 40, gap: 8 },
   label: { color: colors.text, fontSize: 15, fontWeight: '600', marginTop: 16 },
   hint: { color: colors.textDim, fontSize: 13 },
+  bad: { color: colors.bad },
   input: {
     backgroundColor: colors.surface,
     borderColor: colors.border,
@@ -159,11 +152,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
-  segment: { flexDirection: 'row', backgroundColor: colors.surface, borderRadius: 12, padding: 4, gap: 4 },
-  segBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, alignItems: 'center' },
-  segOn: { backgroundColor: colors.button },
-  segText: { color: colors.textDim, fontWeight: '600' },
-  segTextOn: { color: colors.text },
   actions: { flexDirection: 'row', gap: 10, marginTop: 12 },
   flex: { flex: 1 },
   test: { color: colors.text, fontSize: 14, marginTop: 8, lineHeight: 20 },

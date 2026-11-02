@@ -42,6 +42,9 @@ Docs: https://docs.expo.dev/eas/index.md
 
 ## This project
 
-- Must run in **Expo Go**: only use packages bundled in Expo Go, installed with `npx expo install`. No native modules, no config plugins, no dev build.
-- Single screen (`App.tsx`); Expo Router is intentionally not used.
-- TV protocol logic lives in `src/tv/` and is plain TypeScript. Verify changes with `npm run typecheck` and `npm test` (end-to-end against a fake TV through `relay/relay.mjs`).
+- iOS only. Shipped as an **unsigned IPA built on GitHub Actions** (`.github/workflows/ios-ipa.yml`) and installed with **Sideloadly** using a free Apple ID. It does **not** run in Expo Go: it needs the local native module `modules/tv-socket`.
+- Variants come from `APP_VARIANT` in `app.config.ts`: `dev` (dev client, `.dev` bundle ID) and `release`. Day-to-day JS work uses the sideloaded dev build with `npx expo start`. Only native changes need a new CI build, and macOS minutes are scarce on this private repo.
+- Add packages with `npx expo install`. Keep native code limited to `modules/`.
+- Single screen (`App.tsx`). Expo Router is intentionally not used.
+- TV protocol logic lives in `src/tv/` as plain TypeScript; sockets are injected via `SocketFactory` (`src/tv/socket.ts`).
+- Verify with `npm run typecheck` and `npm test` (end-to-end against a fake self-signed TV; `ws` stands in for the native socket). Swift is compiled only in CI.

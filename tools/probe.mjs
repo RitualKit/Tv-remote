@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Milestone 0: talk to the TV from your computer (no phone involved) to learn what it supports.
+// Talk to the TV from your computer (Windows/macOS/Linux, Node 22+) to learn what it supports
+// before building or sideloading anything. Uses the root `ws` dev dependency: run `npm install` first.
 //
-//   node probe.mjs <tv-ip> [--port 8002|8001] [--key KEY_VOLUP] [--art] [--apps]
+//   npm run probe -- <tv-ip> [--port 8002|8001] [--key KEY_VOLUP] [--art] [--apps]
 //
 // - prints device info from http://<tv>:8001/api/v2/
 // - connects to the remote channel, prints every event, saves the pairing token to .token
@@ -20,7 +21,7 @@ const opt = (name, def) => {
   return i >= 0 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : def;
 };
 if (!ip) {
-  console.log('usage: node probe.mjs <tv-ip> [--port 8002|8001] [--key KEY_VOLUP] [--art] [--apps]');
+  console.log('usage: npm run probe -- <tv-ip> [--port 8002|8001] [--key KEY_VOLUP] [--art] [--apps]');
   process.exit(1);
 }
 const port = Number(opt('port', '8002'));
@@ -89,7 +90,7 @@ function remote() {
       if (msg.event === 'ms.channel.connect') {
         if (msg.data?.token) {
           fs.writeFileSync(TOKEN_FILE, msg.data.token);
-          console.log('✓ paired, token saved to relay/.token');
+          console.log('✓ paired, token saved to tools/.token');
         }
         console.log(`→ ${key}`);
         ws.send(JSON.stringify({ method: 'ms.remote.control', params: { Cmd: 'Click', DataOfCmd: key, Option: 'false', TypeOfRemote: 'SendRemoteKey' } }));
@@ -123,7 +124,7 @@ function art() {
     const send = () =>
       ws.send(JSON.stringify({ method: 'ms.channel.emit', params: { event: 'art_app_request', to: 'host', data: JSON.stringify({ request: 'get_artmode_status', id, request_id: id }) } }));
     const t = setTimeout(() => {
-      console.log('✗ Art API did not answer in 6 s (app will fall back to KEY_POWER)');
+      console.log('✗ Art API did not answer in 6 s (the app will fall back to KEY_POWER)');
       ws.close();
       resolve();
     }, 6000);

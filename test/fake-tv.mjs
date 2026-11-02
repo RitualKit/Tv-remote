@@ -1,11 +1,13 @@
 // A fake 2022-style Frame for tests:
-//  - wss/https on SECURE_PORT (self-signed): token pairing, art channel, REST
-//  - ws/http on PLAIN_PORT: refuses the remote channel like a 2022+ set does on 8001
+//  - wss on securePort (self-signed): token pairing, revoked-token refusal, art channel
+//  - http on plainPort: /api/v2/ device info and REST app launch (like the real TV on 8001)
 import http from 'node:http';
 import https from 'node:https';
 import { WebSocketServer } from 'ws';
 
 export const FAKE_TOKEN = 'tok-12345';
+/** A token the TV no longer accepts → ms.channel.unauthorized. */
+export const REVOKED_TOKEN = 'tok-revoked';
 export const KNOWN_APPS = new Set(['3201907018807', '111299001912']);
 
 export function startFakeTv({ key, cert, securePort, plainPort }) {
@@ -32,11 +34,18 @@ export function startFakeTv({ key, cert, securePort, plainPort }) {
   const secure = https.createServer({ key, cert }, rest);
   const plain = http.createServer(rest);
 
-  new WebSocketServer({ server: secure }).on('connection', (ws, req) => {
+  const wssSecure = new WebSocketServer({ server: secure });
+  wssSecure.on('connection', (ws, req) => {
     const u = new URL(req.url, 'https://x');
     ws.send(JSON.stringify({ event: 'ms.edenTV.update', data: {} })); // startup noise
     if (u.pathname.endsWith('samsung.remote.control')) {
       const name = Buffer.from(u.searchParams.get('name') ?? '', 'base64').toString();
+      if (u.searchParams.get('token') === REVOKED_TOKEN) {
+        // user removed us from Device Connection Manager / pressed Deny
+        ws.send(JSON.stringify({ event: 'ms.channel.unauthorized' }));
+        setTimeout(() => ws.close(), 50);
+        return;
+      }
       if (u.searchParams.get('token') === FAKE_TOKEN) {
         ws.send(JSON.stringify({ event: 'ms.channel.connect', data: { id: 'c1', clients: [] } }));
       } else {
@@ -60,22 +69,21 @@ export function startFakeTv({ key, cert, securePort, plainPort }) {
     }
   });
 
-  new WebSocketServer({ server: plain }).on('connection', (ws) => {
-    ws.send(JSON.stringify({ event: 'ms.channel.unauthorized' }));
-    setTimeout(() => ws.close(), 50);
-  });
-
   return new Promise((resolve) =>
     secure.listen(securePort, '127.0.0.1', () =>
       plain.listen(plainPort, '127.0.0.1', () =>
         resolve({
           state,
-          close: () => {
-            secure.closeAllConnections?.();
-            plain.closeAllConnections?.();
-            secure.close();
-            plain.close();
-          },
+          /** Simulates the TV dropping off the network: kills open sockets and stops listening. */
+          close: () =>
+            new Promise((done) => {
+              for (const client of wssSecure.clients) client.terminate();
+              wssSecure.close();
+              secure.closeAllConnections?.();
+              plain.closeAllConnections?.();
+              plain.close();
+              secure.close(() => done());
+            }),
         }),
       ),
     ),

@@ -1,4 +1,5 @@
 import { ART_CHANNEL, CLIENT_NAME, TvConfig, artRequestMessage, channelUrl, parseArtReply, parseFrame } from './protocol';
+import { SocketFactory } from './socket';
 
 /**
  * One-shot request on The Frame's art channel: open socket → wait for ready → send → await
@@ -6,13 +7,14 @@ import { ART_CHANNEL, CLIENT_NAME, TvConfig, artRequestMessage, channelUrl, pars
  */
 export function artRequest(
   cfg: TvConfig,
+  createSocket: SocketFactory,
   request: string,
   extra: Record<string, unknown> = {},
   timeoutMs = 4_000,
 ): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const { message, requestId } = artRequestMessage(request, extra);
-    const ws = new WebSocket(channelUrl(cfg, ART_CHANNEL, CLIENT_NAME));
+    const ws = createSocket(channelUrl(cfg, ART_CHANNEL, CLIENT_NAME));
     let sent = false;
     let done = false;
     let readyFallback: ReturnType<typeof setTimeout> | undefined;
@@ -61,19 +63,19 @@ export function artRequest(
   });
 }
 
-export async function getArtMode(cfg: TvConfig): Promise<'on' | 'off'> {
-  const reply = await artRequest(cfg, 'get_artmode_status');
+export async function getArtMode(cfg: TvConfig, createSocket: SocketFactory): Promise<'on' | 'off'> {
+  const reply = await artRequest(cfg, createSocket, 'get_artmode_status');
   return reply.value === 'on' ? 'on' : 'off';
 }
 
-export async function setArtMode(cfg: TvConfig, on: boolean): Promise<void> {
-  await artRequest(cfg, 'set_artmode_status', { value: on ? 'on' : 'off' });
+export async function setArtMode(cfg: TvConfig, createSocket: SocketFactory, on: boolean): Promise<void> {
+  await artRequest(cfg, createSocket, 'set_artmode_status', { value: on ? 'on' : 'off' });
 }
 
 /** Flip Art Mode; returns the new state. */
-export async function toggleArtMode(cfg: TvConfig): Promise<'on' | 'off'> {
-  const current = await getArtMode(cfg);
+export async function toggleArtMode(cfg: TvConfig, createSocket: SocketFactory): Promise<'on' | 'off'> {
+  const current = await getArtMode(cfg, createSocket);
   const next = current === 'on' ? 'off' : 'on';
-  await setArtMode(cfg, next === 'on');
+  await setArtMode(cfg, createSocket, next === 'on');
   return next;
 }

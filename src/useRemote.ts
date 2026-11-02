@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import { createTvSocket, isTvSocketAvailable } from '../modules/tv-socket';
 import { ConnSnapshot, SamsungRemote } from './tv/SamsungRemote';
+import { SocketFactory } from './tv/socket';
 import { isConfigComplete } from './tv/protocol';
 import { toggleArtMode } from './tv/art';
 import { launchAppRest } from './tv/rest';
@@ -17,40 +19,64 @@ export function useRemote() {
   const [log, setLog] = useState<string[]>([]);
   const remoteRef = useRef<SamsungRemote | null>(null);
   const settingsRef = useRef(settings);
-  settingsRef.current = settings;
 
   const addLog = useCallback((line: string) => {
     const ts = new Date().toLocaleTimeString([], { hour12: false });
     setLog((l) => [`${ts} ${line}`, ...l].slice(0, MAX_LOG));
   }, []);
 
+  /** Apply a settings patch synchronously to the ref (so back-to-back patches don't race) and persist. */
+  const patchSettings = useCallback((patch: Partial<Settings>) => {
+    const next = { ...settingsRef.current, ...patch };
+    settingsRef.current = next;
+    setSettings(next);
+    return saveSettings(next).catch(() => {});
+  }, []);
+
   useEffect(() => {
     loadSettings().then((s) => {
+      settingsRef.current = s;
       setSettings(s);
       setLoaded(true);
     });
   }, []);
 
-  // (Re)create the connection whenever the TV address / transport changes.
-  const { tvIp, mode, relayHost } = settings;
+  /** Native TLS socket, pinned to the TV's certificate after the first successful connect. */
+  const createSocket = useCallback<SocketFactory>(
+    (url) =>
+      createTvSocket(url, {
+        pinnedSha256: settingsRef.current.certSha256,
+        onCertificate: (sha256) => {
+          if (settingsRef.current.certSha256) return;
+          patchSettings({ certSha256: sha256 });
+          addLog(`TV certificate pinned (${sha256.slice(0, 12)}…)`);
+        },
+      }),
+    [patchSettings, addLog],
+  );
+
+  // (Re)create the connection whenever the TV address changes.
+  const { tvIp } = settings;
   useEffect(() => {
     if (!loaded) return;
-    const cfg = { tvIp, mode, relayHost };
-    if (!isConfigComplete(cfg)) {
+    if (!isTvSocketAvailable) {
+      setConn({ status: 'error', message: 'Native socket missing: run the sideloaded Frame Remote build, not Expo Go.' });
+      return;
+    }
+    if (!isConfigComplete({ tvIp })) {
       setConn({ status: 'idle', message: 'Set the TV IP in settings.' });
       return;
     }
     const remote = new SamsungRemote({
-      config: cfg,
+      config: { tvIp },
       token: settingsRef.current.token,
+      createSocket,
       onStatus: (s) => {
         setConn(s);
         if (s.status === 'connected') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       },
       onToken: (token) => {
-        const next = { ...settingsRef.current, token };
-        setSettings(next);
-        saveSettings(next).catch(() => {});
+        patchSettings({ token });
       },
       onLog: addLog,
       onFrame: (event, data) => {
@@ -63,7 +89,7 @@ export function useRemote() {
       remote.disconnect();
       if (remoteRef.current === remote) remoteRef.current = null;
     };
-  }, [loaded, tvIp, mode, relayHost, addLog]);
+  }, [loaded, tvIp, createSocket, patchSettings, addLog]);
 
   // Reconnect when returning to the app; drop the socket in the background.
   useEffect(() => {
@@ -76,23 +102,29 @@ export function useRemote() {
     return () => sub.remove();
   }, []);
 
-  const updateSettings = useCallback(async (patch: Partial<Settings>) => {
-    const prev = settingsRef.current;
-    const next = { ...prev, ...patch };
-    // A different TV invalidates the pairing token.
-    if (next.tvIp.trim() !== prev.tvIp.trim()) next.token = null;
-    const addressChanged = next.tvIp !== prev.tvIp || next.mode !== prev.mode || next.relayHost !== prev.relayHost;
-    setSettings(next);
-    await saveSettings(next);
-    // Address changes recreate the connection via the effect above; otherwise retry now
-    // (e.g. "Save & connect" after fixing Wi-Fi or approving on the TV).
-    if (!addressChanged && 'tvIp' in patch) remoteRef.current?.reconnect();
-  }, []);
+  /** Save a new TV IP. A different TV invalidates the pairing token and pinned certificate. */
+  const saveTvIp = useCallback(
+    async (ip: string) => {
+      const next = ip.trim();
+      if (next !== settingsRef.current.tvIp) {
+        await patchSettings({ tvIp: next, token: null, certSha256: null }); // effect reconnects
+      } else {
+        remoteRef.current?.reconnect(); // "Save & connect" with the same IP = retry now
+      }
+    },
+    [patchSettings],
+  );
 
   const forgetPairing = useCallback(async () => {
-    await updateSettings({ token: null });
+    await patchSettings({ token: null });
     remoteRef.current?.forgetToken();
-  }, [updateSettings]);
+  }, [patchSettings]);
+
+  const resetCertificate = useCallback(async () => {
+    await patchSettings({ certSha256: null });
+    addLog('TV certificate pin cleared; next connect pins the current one');
+    remoteRef.current?.reconnect();
+  }, [patchSettings, addLog]);
 
   const key = useCallback((k: string) => remoteRef.current?.sendKey(k) ?? false, []);
   const holdKey = useCallback((k: string, ms: number) => remoteRef.current?.holdKey(k, ms) ?? false, []);
@@ -103,37 +135,36 @@ export function useRemote() {
     async (app: TvApp) => {
       const r = remoteRef.current;
       if (!r) return;
-      const cfg = settingsRef.current;
-      // Both paths are fire-and-forget; send WS launch and REST launch for the primary ID,
-      // then try REST for alternates only if the first REST call was rejected (404 = unknown id).
+      // Both paths are fire-and-forget; send the WS launch plus REST, trying alternate IDs over
+      // REST only when the TV rejects the previous one (404 = unknown id).
       r.launchApp(app.ids[0]);
       addLog(`launch ${app.name}`);
       for (const id of app.ids) {
-        if (await launchAppRest(cfg, id)) return;
+        if (await launchAppRest({ tvIp: settingsRef.current.tvIp }, id)) return;
       }
     },
     [addLog],
   );
 
   const toggleArt = useCallback(async () => {
-    const cfg = settingsRef.current;
     try {
-      const next = await toggleArtMode(cfg);
+      const next = await toggleArtMode({ tvIp: settingsRef.current.tvIp }, createSocket);
       addLog(`art mode → ${next}`);
     } catch (e) {
       // Art API missing/silent on this firmware: on The Frame a short power press toggles Art ↔ TV.
       addLog(`art API failed (${(e as Error).message}); sending KEY_POWER`);
       remoteRef.current?.sendKey(KEYS.power);
     }
-  }, [addLog]);
+  }, [addLog, createSocket]);
 
   return {
     loaded,
     settings,
     conn,
     log,
-    updateSettings,
+    saveTvIp,
     forgetPairing,
+    resetCertificate,
     key,
     holdKey,
     reconnect,

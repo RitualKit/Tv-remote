@@ -34,7 +34,7 @@ export interface TvApp {
 }
 
 // Netflix/YouTube IDs are widely confirmed; Prime Video / Disney+ are community-reported
-// and should be checked against `ed.installedApp.get` output (see relay/probe.mjs --apps).
+// and should be checked against `ed.installedApp.get` output (see `npm run probe -- <ip> --apps`).
 export const APPS: TvApp[] = [
   { name: 'Netflix', ids: ['3201907018807', '11101200001'], color: '#E50914' },
   { name: 'YouTube', ids: ['111299001912'], color: '#FF0033' },

@@ -1,7 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { ConnSnapshot } from '../tv/SamsungRemote';
-import { ConnectionMode } from '../tv/protocol';
 import { colors } from './theme';
 
 const LABELS: Record<ConnSnapshot['status'], string> = {
@@ -20,14 +19,11 @@ function dotColor(s: ConnSnapshot['status']) {
   return colors.bad;
 }
 
-export function StatusPill({ conn, mode, onPress }: { conn: ConnSnapshot; mode: ConnectionMode; onPress: () => void }) {
+export function StatusPill({ conn, onPress }: { conn: ConnSnapshot; onPress: () => void }) {
   return (
     <Pressable onPress={onPress} style={styles.pill} accessibilityRole="button" accessibilityHint="Tap to reconnect">
       <View style={[styles.dot, { backgroundColor: dotColor(conn.status) }]} />
-      <Text style={styles.text}>
-        {LABELS[conn.status]}
-        {conn.status === 'connected' ? (mode === 'relay' ? ' · relay' : ' · direct') : ''}
-      </Text>
+      <Text style={styles.text}>{LABELS[conn.status]}</Text>
     </Pressable>
   );
 }

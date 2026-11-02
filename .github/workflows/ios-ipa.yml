@@ -1,0 +1,134 @@
+# Builds an UNSIGNED iOS .ipa on a GitHub macOS runner (no Mac or paid Apple account needed).
+# Sideloadly re-signs it with your Apple ID when you install it.
+#
+# Run it: GitHub → Actions → "iOS IPA (for Sideloadly)" → Run workflow → pick a variant.
+#   dev      → "Frame Remote (Dev)": dev client that loads JS from `npx expo start` on your PC.
+#              Rebuild only when native code / native dependencies change.
+#   release  → "Frame Remote": JS bundled in, works with the PC off. Also built for tags v*.
+#
+# Cost: this repo is private, so macOS minutes count 10x against the free 2,000/month
+# (~200 macOS minutes ≈ 8 builds). The cheap Linux "checks" job runs first so a broken commit
+# never reaches the macOS job.
+name: iOS IPA (for Sideloadly)
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'dev = dev client, release = standalone app'
+        type: choice
+        options: [dev, release]
+        default: dev
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}-${{ inputs.variant || 'release' }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  ipa:
+    needs: checks
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      APP_VARIANT: ${{ inputs.variant || 'release' }}
+      # Compile the dev-client network inspector out: it hooks URLSession, and the TV socket
+      # needs its own certificate handling. (TvSocket also avoids it by using .ephemeral.)
+      EX_DEV_CLIENT_NETWORK_INSPECTOR: 'false'
+      CI: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Select newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+          echo "node $(node -v)"
+
+      - run: npm ci
+
+      - name: Generate iOS project (expo prebuild)
+        run: npx expo prebuild --platform ios --clean --no-install
+
+      - name: Cache CocoaPods downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: pods-${{ runner.os }}-${{ hashFiles('package-lock.json', 'modules/**/*.podspec') }}
+          restore-keys: pods-${{ runner.os }}-
+
+      - name: pod install
+        working-directory: ios
+        run: pod install
+
+      - name: Build (unsigned)
+        run: |
+          mkdir -p build
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -n1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          if [ "$APP_VARIANT" = dev ]; then CONFIG=Debug; else CONFIG=Release; fi
+          echo "workspace=$WORKSPACE scheme=$SCHEME configuration=$CONFIG"
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIG" \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build > build/xcodebuild.log 2>&1 || {
+              echo "::error::xcodebuild failed — first errors:"
+              grep -n "error:" build/xcodebuild.log | head -40
+              tail -80 build/xcodebuild.log
+              exit 1
+            }
+          tail -5 build/xcodebuild.log
+
+      - name: Package .ipa
+        run: |
+          APP=$(find build/DerivedData/Build/Products -maxdepth 2 -name '*.app' -type d | head -n1)
+          echo "app=$APP"
+          if [ "$APP_VARIANT" = release ] && [ ! -f "$APP/main.jsbundle" ]; then
+            echo "::error::release build has no embedded JS bundle"; exit 1
+          fi
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/
+          (cd build && zip -qry "FrameRemote-$APP_VARIANT.ipa" Payload)
+          ls -lh build/*.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameRemote-${{ env.APP_VARIANT }}-ipa
+          path: build/FrameRemote-*.ipa
+          retention-days: 30
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: xcodebuild-log
+          path: build/xcodebuild.log
+          retention-days: 7

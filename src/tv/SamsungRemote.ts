@@ -13,6 +13,7 @@ import {
   registerMessage,
   tokenFromConnect,
 } from './protocol';
+import { SocketFactory, SocketLike } from './socket';
 
 export type ConnStatus = 'idle' | 'connecting' | 'awaitingAllow' | 'connected' | 'unauthorized' | 'error';
 
@@ -24,6 +25,7 @@ export interface ConnSnapshot {
 export interface SamsungRemoteOptions {
   config: TvConfig;
   token: string | null;
+  createSocket: SocketFactory;
   onStatus: (s: ConnSnapshot) => void;
   onToken: (token: string | null) => void;
   onLog?: (line: string) => void;
@@ -40,7 +42,7 @@ const BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
  * Reconnects with backoff until disconnect() is called or the TV refuses us.
  */
 export class SamsungRemote {
-  private ws: WebSocket | null = null;
+  private ws: SocketLike | null = null;
   private generation = 0; // ignores events from sockets we've already replaced
   private wanted = false; // true between connect() and disconnect()
   private attempt = 0;
@@ -131,9 +133,9 @@ export class SamsungRemote {
     this.log(`→ connect ${url.replace(/token=[^&]+/, 'token=***')}`);
     this.setStatus({ status: 'connecting' });
 
-    let ws: WebSocket;
+    let ws: SocketLike;
     try {
-      ws = new WebSocket(url);
+      ws = this.opts.createSocket(url);
     } catch (e) {
       this.fail(`Could not open socket: ${String(e)}`);
       return;
@@ -192,24 +194,28 @@ export class SamsungRemote {
         this.setStatus({
           status: 'unauthorized',
           message:
-            this.opts.config.mode === 'direct'
-              ? 'TV refused the connection on port 8001. 2022+ Frames usually need the relay (see Settings).'
-              : 'TV refused the connection. Press Allow on the TV, or remove "FrameRemote" from Device Connection Manager and retry.',
+            'TV refused the connection. Press Allow on the TV, or remove "FrameRemote" from Device Connection Manager and retry.',
         });
       }
     };
 
     ws.onerror = (ev) => {
       if (gen !== this.generation) return;
-      const msg = (ev as unknown as { message?: string }).message;
-      this.log(`socket error${msg ? `: ${msg}` : ''}`);
+      this.log(`socket error${ev.message ? `: ${ev.message}` : ''}`);
+      if (ev.fatal) {
+        // e.g. the TV's certificate no longer matches the pinned one: retrying can't help.
+        this.wanted = false;
+        this.teardown();
+        this.setStatus({ status: 'error', message: ev.message ?? 'Connection rejected.' });
+        return;
+      }
       // Not every WebSocket implementation follows an error with a close event, so treat the
       // error itself as the failure (teardown detaches handlers, so a later close is ignored).
       if (this.status !== 'unauthorized') {
         this.fail(
           this.status === 'connected'
             ? 'Connection lost. Reconnecting…'
-            : 'Could not connect. Check the IP and that the TV (or relay) is reachable.',
+            : 'Could not connect. Check the IP, Wi-Fi, and that the TV is on or in Art Mode.',
         );
       }
     };
@@ -223,7 +229,7 @@ export class SamsungRemote {
       this.fail(
         this.status === 'connected'
           ? 'Connection lost. Reconnecting…'
-          : 'Could not connect. Check the IP and that the TV (or relay) is reachable.',
+          : 'Could not connect. Check the IP, Wi-Fi, and that the TV is on or in Art Mode.',
       );
     };
   }

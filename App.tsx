@@ -41,7 +41,7 @@ function Remote() {
         <View style={styles.header}>
           <View style={{ flex: 1, gap: 8 }}>
             <Text style={styles.title}>The Frame</Text>
-            <StatusPill conn={r.conn} mode={r.settings.mode} onPress={r.reconnect} />
+            <StatusPill conn={r.conn} onPress={r.reconnect} />
           </View>
           <Pressable onPress={() => setSetupOpen(true)} hitSlop={12} accessibilityLabel="Settings" style={styles.gear}>
             <Ionicons name="settings-outline" size={26} color={colors.textDim} />
@@ -93,8 +93,9 @@ function Remote() {
         settings={r.settings}
         log={r.log}
         onClose={() => setSetupOpen(false)}
-        onSave={r.updateSettings}
+        onSaveTvIp={r.saveTvIp}
         onForgetPairing={r.forgetPairing}
+        onResetCertificate={r.resetCertificate}
         onRequestApps={r.requestApps}
       />
     </SafeAreaView>

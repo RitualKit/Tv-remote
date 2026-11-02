@@ -2,15 +2,17 @@
 // No React, no network: everything here can be unit-tested in Node.
 
 export const CLIENT_NAME = 'FrameRemote';
-export const DEFAULT_RELAY_PORT = 8765;
 
-export type ConnectionMode = 'direct' | 'relay';
+/** 2022+ Frames only accept remote control over TLS on 8002 (self-signed cert). */
+export const TV_WSS_PORT = 8002;
+/** Plain HTTP REST (device info, app launch) still answers on 8001. */
+export const TV_HTTP_PORT = 8001;
 
 export interface TvConfig {
   tvIp: string;
-  mode: ConnectionMode;
-  /** "host" or "host:port" of the relay; only used when mode === 'relay'. */
-  relayHost: string;
+  /** Overrides for tests only; the real TV always uses 8002 / 8001. */
+  wssPort?: number;
+  httpPort?: number;
 }
 
 export type RemoteCmd = 'Click' | 'Press' | 'Release';
@@ -58,24 +60,24 @@ export function uuid(): string {
 // ---------------------------------------------------------------------------
 // URLs
 
-/** Adds the default relay port when the user typed only a host. */
-export function normalizeRelayHost(host: string): string {
-  const h = host.trim();
-  if (!h) return h;
-  return /:\d+$/.test(h) ? h : `${h}:${DEFAULT_RELAY_PORT}`;
-}
-
-/** ws://… base. Direct = TV's plain port 8001; relay = relay, which bridges to wss://TV:8002. */
 export function wsBase(cfg: TvConfig): string {
-  return cfg.mode === 'relay'
-    ? `ws://${normalizeRelayHost(cfg.relayHost)}`
-    : `ws://${cfg.tvIp.trim()}:8001`;
+  return `wss://${cfg.tvIp.trim()}:${cfg.wssPort ?? TV_WSS_PORT}`;
 }
 
 export function httpBase(cfg: TvConfig): string {
-  return cfg.mode === 'relay'
-    ? `http://${normalizeRelayHost(cfg.relayHost)}`
-    : `http://${cfg.tvIp.trim()}:8001`;
+  return `http://${cfg.tvIp.trim()}:${cfg.httpPort ?? TV_HTTP_PORT}`;
+}
+
+/**
+ * True for 10/8, 172.16/12 and 192.168/16 addresses. The native socket only skips certificate
+ * checks for these, so the trust override can never apply to an internet host.
+ */
+export function isPrivateIPv4(host: string): boolean {
+  const m = host.trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const [a, b, c, d] = m.slice(1).map(Number);
+  if ([a, b, c, d].some((n) => n > 255)) return false;
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
 }
 
 export function channelUrl(
@@ -90,8 +92,7 @@ export function channelUrl(
 }
 
 export function isConfigComplete(cfg: TvConfig): boolean {
-  if (!cfg.tvIp.trim()) return false;
-  return cfg.mode === 'direct' || cfg.relayHost.trim().length > 0;
+  return cfg.tvIp.trim().length > 0;
 }
 
 // ---------------------------------------------------------------------------
