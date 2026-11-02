@@ -19,12 +19,23 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 4_000)
   }
 }
 
-/** GET /api/v2/ — works without pairing; good "is the TV reachable?" check. */
-export async function getDeviceInfo(cfg: TvConfig): Promise<DeviceInfo> {
-  const res = await fetchWithTimeout(`${httpBase(cfg)}/api/v2/`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const json = await res.json();
-  const d = json?.device ?? {};
+/**
+ * GET /api/v2/: works without pairing, so it's a good "is the TV reachable?" check.
+ * Throws if nothing answers or the reply isn't a Samsung TV's device description.
+ */
+export async function getDeviceInfo(cfg: TvConfig, timeoutMs = 4_000): Promise<DeviceInfo> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs); // covers headers and body
+  let json: any;
+  try {
+    const res = await fetch(`${httpBase(cfg)}/api/v2/`, { signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    json = await res.json();
+  } finally {
+    clearTimeout(t);
+  }
+  const d = json?.device;
+  if (!d || typeof d !== 'object') throw new Error('Not a Samsung TV');
   return {
     name: d.name ?? json?.name,
     modelName: d.modelName,

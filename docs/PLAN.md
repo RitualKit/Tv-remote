@@ -104,3 +104,18 @@ AltStore's own site, faq.altstore.io, is blocked from this sandbox. The points b
 - 2026 comparisons: https://builds.io/blog/technologies/ios-technologies/altstore-vs-sidestore-vs-livecontainer/
 - Unsigned IPA on GitHub Actions: https://github.com/SergioDPal/ipa-builder
 - Samsung protocol / 2022 Frame requires 8002: https://github.com/xchwarze/samsung-tv-ws-api/issues/108
+
+## Addendum: Wi-Fi discovery (subnet scan)
+- **Why:** SSDP/UPnP needs multicast, which a free account can't get the iOS entitlement for. A plain unicast scan needs only the Local Network permission the app already asks for.
+- **How:**
+  - `expo-network` `getIpAddressAsync()` gives the Wi-Fi IPv4 (`en*` interface; `0.0.0.0` if none).
+  - Probe x.y.z.1–254 except the phone itself, with `GET http://<ip>:8001/api/v2/` at 900 ms timeout, 32 in parallel.
+  - Accept only replies with a `device` object.
+  - List results with Frames first.
+  - First launch (no saved IP) scans automatically; exactly one result is pre-filled. Closing the sheet cancels the scan.
+- **Files:** `src/tv/discovery.ts` (pure), `src/useTvScan.ts`, `src/ui/SetupModal.tsx`, `src/tv/rest.ts` (`getDeviceInfo` timeout + device check).
+- **Limits:** /24 only. The first scan may miss everything while iOS is still showing the Local Network prompt; the UI says to scan again.
+- **Tests (`npm test`):**
+  - subnet candidates;
+  - concurrency cap, progress, sort and cancel;
+  - probe against the fake TV, a non-TV JSON server, a closed port and a silent host.

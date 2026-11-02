@@ -26,6 +26,9 @@ import {
   parseFrame,
 } from '../src/tv/protocol';
 import { TvSocket, TvSocketEvents, TvSocketNative } from '../modules/tv-socket/src/TvSocket';
+import { httpProbe, scanForTvs, subnetCandidates, subnetLabel } from '../src/tv/discovery';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { startFakeTv, FAKE_TOKEN, REVOKED_TOKEN } from './fake-tv.mjs';
 
 const SECURE = 28002;
@@ -167,6 +170,74 @@ async function tvSocketWrapperChecks() {
   ok('TvSocket wrapper: events, id filtering, send/close, fatal cert error stops retries');
 }
 
+async function discoveryChecks() {
+  // Subnet maths.
+  const c = subnetCandidates('192.168.1.23');
+  assert.equal(c.length, 253);
+  assert.equal(c[0], '192.168.1.1');
+  assert.equal(c.at(-1), '192.168.1.254');
+  assert.ok(!c.includes('192.168.1.23'), 'skips the phone itself');
+  assert.deepEqual(subnetCandidates('0.0.0.0'), [], 'no Wi-Fi → nothing to scan');
+  assert.deepEqual(subnetCandidates('100.64.3.9'), [], 'carrier NAT is not a home LAN');
+  assert.equal(subnetLabel('10.0.7.42'), '10.0.7.x');
+
+  // Scanner: concurrency cap, progress, sort order (Frame first), cancellation.
+  {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const tvsAt: Record<string, { name: string; frameTv: boolean }> = {
+      '192.168.1.7': { name: 'Bedroom TV', frameTv: false },
+      '192.168.1.40': { name: 'The Frame', frameTv: true },
+    };
+    const probe = async (ip: string) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await sleep(Math.random() * 5);
+      inFlight--;
+      return tvsAt[ip] ?? null;
+    };
+    const progress: number[] = [];
+    const found = await scanForTvs(c, probe, { concurrency: 8, onProgress: (done) => progress.push(done) });
+    assert.ok(maxInFlight <= 8 && maxInFlight > 1, `concurrency respected (max ${maxInFlight})`);
+    assert.equal(progress.at(-1), 253);
+    assert.deepEqual(found.map((t) => t.ip), ['192.168.1.40', '192.168.1.7'], 'Frame listed first');
+
+    let probed = 0;
+    let stop = false;
+    const partial = await scanForTvs(c, async () => (++probed === 20 && (stop = true), null), {
+      concurrency: 4,
+      isCancelled: () => stop,
+    });
+    assert.deepEqual(partial, []);
+    assert.ok(probed < 30, `stops soon after cancel (probed ${probed})`);
+  }
+
+  // httpProbe: non-TV JSON server → null; closed port → null; silent server → null within timeout.
+  {
+    const listen = (handler: http.RequestListener) =>
+      new Promise<http.Server>((resolve) => {
+        const s = http.createServer(handler);
+        s.listen(0, '127.0.0.1', () => resolve(s));
+      });
+    const port = (s: http.Server) => (s.address() as AddressInfo).port;
+
+    const notTv = await listen((_req, res) => res.writeHead(200, { 'content-type': 'application/json' }).end('{"hello":1}'));
+    assert.equal(await httpProbe(900, port(notTv))('127.0.0.1'), null, 'JSON without device info is not a TV');
+
+    const closedPort = port(notTv);
+    await new Promise((r) => notTv.close(r));
+    assert.equal(await httpProbe(900, closedPort)('127.0.0.1'), null, 'closed port');
+
+    const silent = await listen(() => {}); // accepts, never answers
+    const t0 = Date.now();
+    assert.equal(await httpProbe(300, port(silent))('127.0.0.1'), null, 'silent host');
+    assert.ok(Date.now() - t0 < 1500, 'probe gives up at its timeout');
+    silent.closeAllConnections();
+    silent.close();
+  }
+  ok('discovery: subnet candidates, scan concurrency/progress/sort/cancel, probe timeouts');
+}
+
 async function fakeTvChecks() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frame-e2e-'));
   execFileSync(
@@ -245,6 +316,12 @@ async function fakeTvChecks() {
   assert.equal(await launchAppRest(cfg, 'bogus'), false);
   ok('device info + REST app launch');
 
+  // The scan's probe recognises the (fake) Frame.
+  const probed = await httpProbe(900, PLAIN)('127.0.0.1');
+  assert.equal(probed?.modelName, 'QN55LS03BAFXZA');
+  assert.equal(probed?.frameTv, true);
+  ok('scan probe identifies the Frame');
+
   // Auto-reconnect: TV drops off the network, comes back → connected again by itself.
   {
     const r = runRemote(cfg, token);
@@ -265,6 +342,7 @@ async function fakeTvChecks() {
 async function main() {
   protocolChecks();
   await tvSocketWrapperChecks();
+  await discoveryChecks();
   await fakeTvChecks();
   console.log('\nAll checks passed.');
 }

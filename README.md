@@ -10,6 +10,7 @@ It has:
 - mute and Power (tap toggles Art↔TV, hold turns the TV off), plus an Art/TV button
 - a collapsible number pad and Netflix / YouTube / Prime / Disney+ shortcuts
 - haptics, a connection status pill and auto-reconnect
+- finds the TV on your Wi-Fi automatically (subnet scan), or takes a typed IP
 
 Research and design decisions are in [docs/PLAN.md](docs/PLAN.md).
 
@@ -81,8 +82,11 @@ Pushing a tag `v*` also triggers a build.
    artifact in Safari on the phone also works.
 2. On the iPhone: AltStore → **My Apps** → **+** (top left) → pick `FrameRemote.ipa`. Keep the PC
    with AltServer on and on the same Wi-Fi while it installs.
-3. Open Frame Remote, allow **Local Network**, enter the TV's IP, tap **Save & connect**, and
-   press **Allow** on the TV.
+3. Open Frame Remote and allow **Local Network**. The setup sheet scans your Wi-Fi and lists the
+   Samsung TVs that answer, with Frames first. Tap yours, or type its IP. Then tap
+   **Save & connect** and press **Allow** on the TV.
+   - If the scan finds nothing on the first try, iOS may still have been asking for Local
+     Network access. Allow it and tap **Scan Wi-Fi for TVs** again.
 
 To **update**, build a new `.ipa` and install it the same way. The pairing token and the TV's
 certificate fingerprint are kept.
@@ -103,9 +107,13 @@ AltStore reinstall** before it reaches the phone. To save builds:
   - App data is kept across refreshes.
 - **3 active apps, and AltStore counts as one.** AltStore + Frame Remote = 2.
 - **About 10 App IDs per 7 days.** Reinstalling Frame Remote reuses its ID.
-- Wake-on-LAN and auto-discovery are impossible: iOS reserves broadcast/multicast UDP for apps
-  with an Apple-approved entitlement. Enter the IP by hand, and use the physical remote when the
-  TV is fully off. Art Mode → TV works fine.
+- **Discovery is a subnet scan.** The app asks every address in the phone's /24 network
+  (e.g. 192.168.1.1–254) for the TV's device description on port 8001.
+  - SSDP/UPnP discovery and Wake-on-LAN are impossible: iOS reserves broadcast/multicast UDP for
+    apps with an Apple-approved entitlement.
+  - The scan only covers /24 networks. On a larger network, or if the TV is on a different
+    subnet, type the IP instead.
+  - Use the physical remote when the TV is fully off. Art Mode → TV works fine.
 
 ## Troubleshooting
 
@@ -119,6 +127,8 @@ AltStore reinstall** before it reaches the phone. To save builds:
   and check that Developer Mode is on.
 - **"Maximum App ID limit reached"**: wait for the weekly reset.
 - **App stopped opening after a week**: refresh in AltStore with AltServer reachable.
+- **Scan finds no TV**: same checks as "Not reachable" below. Also note that a guest network, or
+  a mesh system that puts the phone and TV on different subnets, hides the TV from the scan.
 - **"Not reachable" in Test**:
   - check iOS Settings → Privacy & Security → **Local Network** → Frame Remote;
   - the phone must be on the same Wi-Fi, with no guest network, client isolation or VPN;
@@ -138,7 +148,7 @@ AltStore reinstall** before it reaches the phone. To save builds:
 
 ```bash
 npm run typecheck
-npm test    # protocol + TvSocket wrapper + app connection code against a fake self-signed Frame (needs openssl)
+npm test    # protocol, TvSocket wrapper, discovery scan, app connection code against a fake self-signed Frame (needs openssl)
 ```
 GitHub Actions runs both before every macOS build.
 
@@ -153,6 +163,8 @@ src/tv/protocol.ts             URLs + message builders/parsers (pure)
 src/tv/SamsungRemote.ts        connection state machine: pairing, token, backoff reconnect
 src/tv/art.ts                  Art Mode channel
 src/tv/rest.ts                 /api/v2/ device info, REST app launch
+src/tv/discovery.ts            Wi-Fi subnet scan for Samsung TVs (pure; probe injected)
+src/useTvScan.ts               scan hook: phone IP via expo-network, progress, results
 src/tv/keys.ts                 KEY_* codes, app IDs
 src/useRemote.ts               React hook: settings, cert pinning, AppState reconnect, actions
 src/ui/*                       buttons, D-pad, number pad, status pill, setup sheet
