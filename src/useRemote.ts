@@ -107,13 +107,15 @@ export function useRemote() {
     };
   }, [loaded, tvIp, createSocket, patchSettings, addLog]);
 
-  // Reconnect when returning to the app; drop the socket in the background.
+  // Keep the connection while the app is in the background; on return, check it's still alive
+  // (instant if so) or reconnect at once. Rebuilding it from scratch every time was the main
+  // source of reconnect delay.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       const r = remoteRef.current;
       if (!r) return;
-      if (state === 'active') r.connect();
-      else if (state === 'background') r.disconnect();
+      if (state === 'active') r.resume();
+      else if (state === 'background') r.suspend();
     });
     return () => sub.remove();
   }, []);

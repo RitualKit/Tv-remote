@@ -19,7 +19,7 @@ export const INSTALLED_APPS = [
 ];
 
 export function startFakeTv({ key, cert, securePort, plainPort }) {
-  const state = { received: [], artMode: 'off', launches: [] };
+  const state = { received: [], artMode: 'off', launches: [], remoteConnections: 0 };
   const info = {
     device: { name: 'Fake Frame', modelName: 'QN55LS03BAFXZA', FrameTVSupport: 'true', TokenAuthSupport: 'true', PowerState: 'on' },
   };
@@ -53,6 +53,7 @@ export function startFakeTv({ key, cert, securePort, plainPort }) {
     const u = new URL(req.url, 'https://x');
     ws.send(JSON.stringify({ event: 'ms.edenTV.update', data: {} })); // startup noise
     if (u.pathname.endsWith('samsung.remote.control')) {
+      state.remoteConnections++;
       const name = Buffer.from(u.searchParams.get('name') ?? '', 'base64').toString();
       if (u.searchParams.get('token') === REVOKED_TOKEN) {
         // user removed us from Device Connection Manager / pressed Deny

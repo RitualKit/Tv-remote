@@ -30,16 +30,35 @@ export interface SamsungRemoteOptions {
   onToken: (token: string | null) => void;
   onLog?: (line: string) => void;
   onFrame?: (event: string, data: unknown) => void;
+  /** Clock, injectable for tests. */
+  now?: () => number;
 }
 
 const OPEN_TIMEOUT_MS = 8_000; // socket must open within this
 const ALLOW_TIMEOUT_MS = 30_000; // user has this long to press Allow on the TV
 const REGISTER_AFTER_MS = 3_000; // silent socket → send the experimental register frame
-const BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
+/** First retry almost at once (most drops are momentary), then back off. */
+export const BACKOFF_MS = [250, 1_000, 2_000, 4_000, 8_000, 10_000];
+/** Keys pressed while (re)connecting are sent once connected if they are at most this old. */
+export const QUEUE_WINDOW_MS = 2_000;
+const QUEUE_MAX = 12;
+/** On returning to the app, how long to wait for the kept connection to answer a ping. */
+export const RESUME_PING_TIMEOUT_MS = 1_000;
+
+interface Pending {
+  msg: string;
+  at: number;
+  key?: string;
+  cmd?: RemoteCmd;
+}
 
 /**
  * One persistent connection to the TV's remote-control channel.
- * Reconnects with backoff until disconnect() is called or the TV refuses us.
+ * - Reconnects with backoff until disconnect() is called or the TV refuses us.
+ * - Survives the app going to the background: suspend()/resume() keep the socket and, on
+ *   return, ping it; if it's dead, reconnect at once.
+ * - Keys pressed while (re)connecting or verifying are queued for QUEUE_WINDOW_MS and sent as
+ *   soon as the link is ready; older ones are dropped so nothing fires unexpectedly later.
  */
 export class SamsungRemote {
   private ws: SocketLike | null = null;
@@ -50,9 +69,16 @@ export class SamsungRemote {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private snapshot: ConnSnapshot = { status: 'idle' };
   private token: string | null;
+  private pending: Pending[] = [];
+  /** True while a resumed connection is being pinged; keys queue meanwhile. */
+  private verifying = false;
+  private openedAt = 0;
+  private suspendedAt: number | null = null;
+  private readonly now: () => number;
 
   constructor(private opts: SamsungRemoteOptions) {
     this.token = opts.token;
+    this.now = opts.now ?? Date.now;
   }
 
   get status(): ConnStatus {
@@ -90,14 +116,57 @@ export class SamsungRemote {
 
   disconnect(): void {
     this.wanted = false;
+    this.pending = [];
     this.clearRetry();
     this.teardown();
     this.setStatus({ status: 'idle' });
   }
 
-  /** Returns false (and kicks off a reconnect) if not connected; keys are never queued. */
+  /** The app went to the background. The connection is kept (see resume). */
+  suspend(): void {
+    this.suspendedAt = this.now();
+  }
+
+  /**
+   * The app is in the foreground again. If the kept connection still answers a ping, carry on
+   * instantly; if not (TV slept, Wi-Fi changed), reconnect right away instead of waiting.
+   */
+  resume(): void {
+    this.wanted = true;
+    const away = this.suspendedAt === null ? null : this.now() - this.suspendedAt;
+    this.suspendedAt = null;
+    const awayText = away === null ? '' : ` after ${(away / 1000).toFixed(1)}s`;
+    const ws = this.ws;
+    if (ws && this.isConnected) {
+      if (!ws.checkAlive) return;
+      const gen = this.generation;
+      const t0 = this.now();
+      this.verifying = true;
+      const settle = (alive: boolean) => {
+        if (gen !== this.generation) return;
+        this.verifying = false;
+        if (alive) {
+          this.log(`back${awayText}: connection still alive (${this.now() - t0} ms)`);
+          this.flushPending();
+        } else {
+          this.log(`back${awayText}: connection gone → reconnecting`);
+          this.reconnect();
+        }
+      };
+      ws.checkAlive(RESUME_PING_TIMEOUT_MS).then(settle, () => settle(false));
+      return;
+    }
+    if (this.status === 'connecting' || this.status === 'awaitingAllow') return;
+    if (awayText) this.log(`back${awayText}: reconnecting now`);
+    this.reconnect();
+  }
+
+  /**
+   * Sends now if connected; otherwise starts connecting and queues the key (see
+   * QUEUE_WINDOW_MS). Returns false only if the key was not accepted.
+   */
   sendKey(key: string, cmd: RemoteCmd = 'Click'): boolean {
-    return this.sendRaw(keyMessage(key, cmd));
+    return this.sendRaw(keyMessage(key, cmd), { key, cmd });
   }
 
   /** Press, hold for `ms`, release. Used for long-press power (full off on The Frame). */
@@ -108,29 +177,62 @@ export class SamsungRemote {
   }
 
   launchApp(appId: string): boolean {
-    return this.sendRaw(launchAppMessage(appId));
+    return this.sendRaw(launchAppMessage(appId), {});
   }
 
   /** Reply arrives via onFrame as event 'ed.installedApp.get'. Not supported on every model. */
   requestInstalledApps(): boolean {
-    return this.sendRaw(installedAppsMessage());
+    return this.sendRaw(installedAppsMessage(), false);
   }
 
   // -------------------------------------------------------------------------
 
-  private sendRaw(msg: string): boolean {
-    if (this.ws && this.isConnected) {
+  /** `queue`: false = never queue (the caller handles "not connected"). */
+  private sendRaw(msg: string, queue: { key?: string; cmd?: RemoteCmd } | false): boolean {
+    if (this.ws && this.isConnected && !this.verifying) {
       this.ws.send(msg);
       return true;
     }
-    this.connect();
-    return false;
+    if (!this.verifying) this.connect();
+    if (queue === false) return false;
+    this.pending.push({ msg, at: this.now(), ...queue });
+    if (this.pending.length > QUEUE_MAX) this.pending.splice(0, this.pending.length - QUEUE_MAX);
+    return true;
+  }
+
+  /** Send queued keys that are still fresh. A Release whose Press was dropped is dropped too. */
+  private flushPending(): void {
+    const ws = this.ws;
+    if (!ws || this.pending.length === 0) return;
+    const cutoff = this.now() - QUEUE_WINDOW_MS;
+    const items = this.pending;
+    this.pending = [];
+    const droppedPress = new Set<string>();
+    let sent = 0;
+    let dropped = 0;
+    for (const p of items) {
+      if (p.at < cutoff) {
+        dropped++;
+        if (p.key && p.cmd === 'Press') droppedPress.add(p.key);
+        continue;
+      }
+      if (p.key && p.cmd === 'Release' && droppedPress.has(p.key)) {
+        droppedPress.delete(p.key);
+        dropped++;
+        continue;
+      }
+      if (p.key && p.cmd === 'Press') droppedPress.delete(p.key);
+      ws.send(p.msg);
+      sent++;
+    }
+    this.log(`sent ${sent} queued key${sent === 1 ? '' : 's'}${dropped ? `, dropped ${dropped} stale` : ''}`);
   }
 
   private open(): void {
     const gen = ++this.generation;
     const url = channelUrl(this.opts.config, REMOTE_CHANNEL, CLIENT_NAME, this.token);
     this.log(`→ connect ${url.replace(/token=[^&]+/, 'token=***')}`);
+    this.openedAt = this.now();
     this.setStatus({ status: 'connecting' });
 
     let ws: SocketLike;
@@ -151,7 +253,7 @@ export class SamsungRemote {
 
     ws.onopen = () => {
       if (gen !== this.generation) return;
-      this.log('socket open, waiting for TV');
+      this.log(`socket open (${this.now() - this.openedAt} ms), waiting for TV`);
       this.setStatus({ status: 'awaitingAllow', message: 'If the TV shows a prompt, choose Allow.' });
       this.after(REGISTER_AFTER_MS, () => {
         if (gen === this.generation && !gotEvent && this.ws) {
@@ -185,11 +287,14 @@ export class SamsungRemote {
         }
         this.attempt = 0;
         this.clearTimers();
+        this.log(`connected in ${this.now() - this.openedAt} ms`);
         this.setStatus({ status: 'connected' });
+        this.flushPending();
       } else if (UNAUTHORIZED_EVENTS.has(frame.event)) {
         this.token = null;
         this.opts.onToken(null);
         this.wanted = false; // don't hammer the TV with prompts
+        this.pending = []; // never fire old presses after a later re-pair
         this.teardown();
         this.setStatus({
           status: 'unauthorized',
@@ -205,6 +310,7 @@ export class SamsungRemote {
       if (ev.fatal) {
         // e.g. the TV's certificate no longer matches the pinned one: retrying can't help.
         this.wanted = false;
+        this.pending = [];
         this.teardown();
         this.setStatus({ status: 'error', message: ev.message ?? 'Connection rejected.' });
         return;
@@ -241,7 +347,7 @@ export class SamsungRemote {
     if (!this.wanted) return;
     const delay = BACKOFF_MS[Math.min(this.attempt, BACKOFF_MS.length - 1)];
     this.attempt++;
-    this.log(`retry in ${delay / 1000}s`);
+    this.log(`retry in ${delay < 1000 ? `${delay} ms` : `${delay / 1000}s`}`);
     this.clearRetry();
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
@@ -251,6 +357,7 @@ export class SamsungRemote {
 
   private teardown(): void {
     this.generation++;
+    this.verifying = false;
     this.clearTimers();
     const ws = this.ws;
     this.ws = null;

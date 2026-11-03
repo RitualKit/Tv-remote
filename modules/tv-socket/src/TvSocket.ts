@@ -17,6 +17,8 @@ export interface TvSocketNative {
   open(id: string, url: string, pinnedSha256: string | null): void;
   send(id: string, text: string): void;
   close(id: string): void;
+  /** WebSocket ping; resolves true if the pong arrives within `timeoutMs`. */
+  ping(id: string, timeoutMs: number): Promise<boolean>;
   addListener<K extends keyof TvSocketEvents>(event: K, listener: TvSocketEvents[K]): Subscription;
 }
 
@@ -77,6 +79,15 @@ export class TvSocket {
   send(data: string): void {
     if (this.readyState !== 1) throw new Error('TvSocket is not open');
     this.native.send(this.id, data);
+  }
+
+  /** Liveness check used when the app returns to the foreground. */
+  checkAlive(timeoutMs: number): Promise<boolean> {
+    if (this.readyState !== 1) return Promise.resolve(false);
+    return this.native.ping(this.id, timeoutMs).then(
+      (alive) => alive === true,
+      () => false,
+    );
   }
 
   close(): void {

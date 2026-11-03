@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { WebSocket as NodeWebSocket } from 'ws';
-import { SamsungRemote, ConnSnapshot } from '../src/tv/SamsungRemote';
+import { SamsungRemote, ConnSnapshot, BACKOFF_MS, QUEUE_WINDOW_MS } from '../src/tv/SamsungRemote';
 import { SocketFactory, SocketLike } from '../src/tv/socket';
 import { getArtMode, toggleArtMode } from '../src/tv/art';
 import { findInstalledId, getAppStatus, getDeviceInfo, launchAppRest } from '../src/tv/rest';
@@ -54,10 +54,37 @@ const PLAIN = 28001;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ok = (msg: string) => console.log(`✓ ${msg}`);
 
-/** Node stand-in for the native TvSocket: TLS without certificate verification. */
-const nodeSocket: SocketFactory = (url) => new NodeWebSocket(url, { rejectUnauthorized: false }) as unknown as SocketLike;
+/** Node stand-in for the native TvSocket: TLS without certificate verification, plus checkAlive via ping/pong. */
+const nodeSocket: SocketFactory = (url) => {
+  const ws = new NodeWebSocket(url, { rejectUnauthorized: false });
+  // Like a browser/iOS WebSocket: an error with no handler attached (e.g. closing a socket
+  // that is still opening) must not crash the process.
+  ws.on('error', () => {});
+  const sock = ws as unknown as SocketLike;
+  sock.checkAlive = (timeoutMs) =>
+    new Promise<boolean>((resolve) => {
+      if (ws.readyState !== NodeWebSocket.OPEN) return resolve(false);
+      const onPong = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        ws.off('pong', onPong);
+        resolve(false);
+      }, timeoutMs);
+      ws.once('pong', onPong);
+      ws.ping();
+    });
+  return sock;
+};
+/** Like nodeSocket, but the link "died" while the app was away: pings never come back. */
+const deadOnResumeSocket: SocketFactory = (url) => {
+  const sock = nodeSocket(url);
+  sock.checkAlive = (timeoutMs) => new Promise((resolve) => setTimeout(() => resolve(false), Math.min(timeoutMs, 60)));
+  return sock;
+};
 
-function runRemote(cfg: TvConfig, token: string | null, createSocket: SocketFactory = nodeSocket) {
+function runRemote(cfg: TvConfig, token: string | null, createSocket: SocketFactory = nodeSocket, now?: () => number) {
   const statuses: ConnSnapshot[] = [];
   const tokens: (string | null)[] = [];
   const frames: { event: string; data: unknown }[] = [];
@@ -69,6 +96,7 @@ function runRemote(cfg: TvConfig, token: string | null, createSocket: SocketFact
     onToken: (t) => tokens.push(t),
     onLog: (l) => process.env.VERBOSE && console.log('   log:', l),
     onFrame: (event, data) => frames.push({ event, data }),
+    now,
   });
   const waitFor = async (st: ConnSnapshot['status'], ms = 5000) => {
     const t0 = Date.now();
@@ -96,6 +124,12 @@ class FakeNative implements TvSocketNative {
   }
   close(id: string) {
     this.closed.push(id);
+  }
+  pingResult: boolean | 'reject' = true;
+  pings: { id: string; timeoutMs: number }[] = [];
+  ping(id: string, timeoutMs: number) {
+    this.pings.push({ id, timeoutMs });
+    return this.pingResult === 'reject' ? Promise.reject(new Error('boom')) : Promise.resolve(this.pingResult);
   }
   addListener<K extends keyof TvSocketEvents>(event: K, fn: TvSocketEvents[K]) {
     if (!this.listeners.has(event)) this.listeners.set(event, new Set());
@@ -186,7 +220,23 @@ async function tvSocketWrapperChecks() {
     assert.match(r.statuses.at(-1)!.message ?? '', /certificate changed/);
     r.remote.disconnect();
   }
-  ok('TvSocket wrapper: events, id filtering, send/close, fatal cert error stops retries');
+  // checkAlive → native ping; false before open, and never rejects.
+  {
+    const native = new FakeNative();
+    const sock = new TvSocket('wss://192.168.1.50:8002/x', native);
+    const id = native.opened[0].id;
+    assert.equal(await sock.checkAlive(1000), false, 'not open yet');
+    assert.equal(native.pings.length, 0);
+    native.emit('onOpen', { id });
+    assert.equal(await sock.checkAlive(1000), true);
+    assert.deepEqual(native.pings, [{ id, timeoutMs: 1000 }]);
+    native.pingResult = false;
+    assert.equal(await sock.checkAlive(1000), false);
+    native.pingResult = 'reject';
+    assert.equal(await sock.checkAlive(1000), false, 'a native failure reads as "not alive"');
+    sock.close();
+  }
+  ok('TvSocket wrapper: events, id filtering, send/close, fatal cert error stops retries, checkAlive');
 }
 
 function appButtonChecks() {
@@ -791,6 +841,79 @@ async function fakeTvChecks() {
     r.remote.disconnect();
     ok('revoked token → unauthorized, token cleared, no retry loop');
   }
+
+  // ── Faster reconnect / no lost first press ──
+  assert.equal(BACKOFF_MS[0], 250, 'first retry almost at once');
+  const keysAtTv = (key: string) =>
+    tv.state.received.filter((x: any) => x.msg.params?.DataOfCmd === key).map((x: any) => x.msg.params.Cmd);
+  const settle = () => sleep(150);
+
+  // A key pressed while connecting is delivered once connected.
+  {
+    const r = runRemote(cfg, token);
+    r.remote.connect();
+    assert.equal(r.remote.sendKey('KEY_VOLDOWN'), true, 'accepted (queued) while connecting');
+    await r.waitFor('connected', 2000);
+    await settle();
+    assert.deepEqual(keysAtTv('KEY_VOLDOWN'), ['Click']);
+    r.remote.disconnect();
+  }
+  // Stale presses (older than the window) are dropped, and a Release whose Press was dropped too.
+  {
+    const clock = { t: Date.now() };
+    const r = runRemote(cfg, token, nodeSocket, () => clock.t);
+    r.remote.connect();
+    r.remote.sendKey('KEY_MUTE');
+    r.remote.sendKey('KEY_INFO', 'Press');
+    clock.t += QUEUE_WINDOW_MS + 500;
+    r.remote.sendKey('KEY_INFO', 'Release');
+    await r.waitFor('connected', 2000);
+    await settle();
+    assert.deepEqual(keysAtTv('KEY_MUTE'), [], 'stale click dropped');
+    assert.deepEqual(keysAtTv('KEY_INFO'), [], 'no orphan Release without its Press');
+    r.remote.disconnect();
+  }
+  // Back from the background, link alive: ping, no new connection; keys during the check arrive.
+  {
+    const r = runRemote(cfg, token);
+    r.remote.connect();
+    await r.waitFor('connected', 2000);
+    const before = tv.state.remoteConnections;
+    r.remote.suspend();
+    r.remote.resume();
+    assert.equal(r.remote.sendKey('KEY_CHUP'), true);
+    await settle();
+    assert.equal(tv.state.remoteConnections, before, 'kept connection reused, no reconnect');
+    assert.equal(r.statuses.at(-1)!.status, 'connected');
+    assert.deepEqual(keysAtTv('KEY_CHUP'), ['Click'], 'key pressed during the check delivered');
+    r.remote.disconnect();
+  }
+  // Back from the background, link dead (no pong): reconnect at once and deliver the queued key.
+  {
+    const r = runRemote(cfg, token, deadOnResumeSocket);
+    r.remote.connect();
+    await r.waitFor('connected', 2000);
+    const before = tv.state.remoteConnections;
+    r.remote.suspend();
+    r.remote.resume();
+    r.remote.sendKey('KEY_CHDOWN');
+    await sleep(400);
+    assert.equal(tv.state.remoteConnections, before + 1, 'reconnected');
+    assert.equal(r.statuses.at(-1)!.status, 'connected');
+    assert.deepEqual(keysAtTv('KEY_CHDOWN'), ['Click'], 'queued key delivered on the new connection');
+    r.remote.disconnect();
+  }
+  // Resume when not connected: connect right away.
+  {
+    const r = runRemote(cfg, token);
+    r.remote.resume();
+    await r.waitFor('connected', 2000);
+    // The installed-app request is never queued: it reports "not sent" so the UI can say so.
+    r.remote.disconnect();
+    assert.equal(r.remote.requestInstalledApps(), false);
+    r.remote.disconnect();
+  }
+  ok('reconnect: queued first press, stale drop + Press/Release pairing, resume ping (alive/dead), 250 ms first retry');
 
   // Art Mode.
   assert.equal(await getArtMode(cfg, nodeSocket), 'off');

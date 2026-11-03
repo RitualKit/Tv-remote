@@ -53,6 +53,18 @@ public final class TvSocketModule: Module {
       connection.close()
     }
 
+    // Liveness check (used when the app comes back to the foreground): true if the TV answers
+    // a WebSocket ping within `timeoutMs`, false otherwise. Never rejects.
+    AsyncFunction("ping") { (id: String, timeoutMs: Int, promise: Promise) in
+      guard let connection = self.connection(for: id) else {
+        promise.resolve(false)
+        return
+      }
+      connection.ping(timeoutMs: timeoutMs) { alive in
+        promise.resolve(alive)
+      }
+    }
+
     OnDestroy {
       self.lock.lock()
       let all = Array(self.connections.values)
@@ -159,6 +171,30 @@ final class TvSocketConnection: NSObject, URLSessionWebSocketDelegate {
       guard !self.finished else { return }
       self.task?.cancel(with: .normalClosure, reason: nil)
       self.finish(code: 1000, reason: "")
+    }
+  }
+
+  /// Ping once; `completion(true)` if the pong arrives within `timeoutMs`. Called exactly once.
+  func ping(timeoutMs: Int, completion: @escaping (Bool) -> Void) {
+    dispatchQueue.async {
+      guard !self.finished, let task = self.task else {
+        completion(false)
+        return
+      }
+      var answered = false
+      let answer: (Bool) -> Void = { alive in
+        // Always runs on dispatchQueue, so `answered` needs no lock.
+        if answered { return }
+        answered = true
+        completion(alive)
+      }
+      self.dispatchQueue.asyncAfter(deadline: .now() + .milliseconds(max(timeoutMs, 1))) {
+        answer(false)
+      }
+      task.sendPing { [weak self] error in
+        guard let self else { return }
+        self.dispatchQueue.async { answer(error == nil) }
+      }
     }
   }
 
