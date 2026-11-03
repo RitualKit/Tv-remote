@@ -278,7 +278,14 @@ function holdGestureChecks() {
       send: (cmd) => sent.push({ cmd, at: t }),
       minHoldMs: 1000,
       now: () => t,
-      setTimer: (fn, ms) => timers.push({ at: t + ms, fn }),
+      setTimer: (fn, ms) => {
+        const tm = { at: t + ms, fn };
+        timers.push(tm);
+        return tm;
+      },
+      clearTimer: (h) => {
+        timers = timers.filter((x) => x !== h);
+      },
     });
     return { g, sent };
   };
@@ -326,6 +333,38 @@ function holdGestureChecks() {
     advance(5000);
     assert.deepEqual(sent.map((x) => x.cmd), ['Press', 'Release']);
   }
+  // Review finding (PR #2): a short hold, then a new hold before its deferred Release fires.
+  // Must be ONE continuous hold on the TV: no second Press, no Release while the finger is down.
+  {
+    const { g, sent } = make();
+    g.holdStart(); //   0 ms: Press
+    advance(100);
+    g.end(); //         100 ms: lifted early → Release deferred to 1000 ms
+    advance(500);
+    g.holdStart(); //   600 ms: held again
+    advance(900); //    1500 ms: the old deferred Release must NOT have fired
+    assert.deepEqual(sent.map((x) => x.cmd), ['Press'], 'no Press,Press / no Release mid-hold');
+    assert.equal(g.holding, true);
+    advance(500);
+    g.end(); //         2000 ms: lifted after > 1 s since the Press → release now
+    assert.deepEqual(sent.map((x) => x.cmd), ['Press', 'Release']);
+    assert.equal(sent[1].at - sent[0].at, 2000, 'released when the finger lifted, 2 s after the Press');
+    advance(5000);
+    assert.equal(sent.length, 2, 'no stray Release later');
+  }
+  // A tap while a deferred Release is pending: Release first, then the Click (strict ordering).
+  {
+    const { g, sent } = make();
+    g.holdStart();
+    advance(100);
+    g.end();
+    advance(200);
+    g.tap();
+    assert.deepEqual(sent.map((x) => x.cmd), ['Press', 'Release', 'Click']);
+    advance(5000);
+    assert.equal(sent.length, 3, 'the cancelled deferred Release never fires');
+  }
+
   // Direction keys: hold repeats Click until release.
   {
     const sent: HoldCmd[] = [];
