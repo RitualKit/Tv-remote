@@ -44,6 +44,7 @@ import { httpProbe, scanForTvs, subnetCandidates, subnetLabel } from '../src/tv/
 import http from 'node:http';
 import { buildSource } from '../tools/make-altstore-source.mjs';
 import { createHoldGesture, createRepeatGesture, HoldCmd } from '../src/ui/holdGesture';
+import { createJoystick, directionOf } from '../src/ui/joystick';
 import type { AddressInfo } from 'node:net';
 import { startFakeTv, FAKE_TOKEN, REVOKED_TOKEN, INSTALLED_APPS } from './fake-tv.mjs';
 
@@ -392,6 +393,142 @@ function holdGestureChecks() {
   ok('hold gesture: OK = Press…Release (1 s minimum); arrows = repeated Click; idempotent');
 }
 
+function joystickChecks() {
+  let t = 0;
+  let timers: { at: number; fn: () => void }[] = [];
+  const advance = (ms: number) => {
+    const until = t + ms;
+    for (;;) {
+      timers.sort((a, b) => a.at - b.at);
+      const next = timers[0];
+      if (!next || next.at > until) break;
+      timers.shift();
+      t = next.at;
+      next.fn();
+    }
+    t = until;
+  };
+  const setTimer = (fn: () => void, ms: number) => {
+    const tm = { at: t + ms, fn };
+    timers.push(tm);
+    return tm;
+  };
+  const clearTimer = (h: unknown) => {
+    timers = timers.filter((x) => x !== h);
+  };
+  const make = () => {
+    timers = [];
+    const sent: string[] = [];
+    const ok = createHoldGesture({ send: (cmd) => sent.push(`ok:${cmd}`), now: () => t, setTimer, clearTimer });
+    const j = createJoystick({
+      ok,
+      onDirection: (d, repeat) => sent.push(repeat ? `${d}*` : d),
+      threshold: 28,
+      holdAfterMs: 400,
+      repeatDelayMs: 350,
+      repeatEveryMs: 130,
+      setTimer,
+      clearTimer,
+    });
+    return { j, sent };
+  };
+
+  // Dominant axis decides the direction.
+  assert.equal(directionOf(31, -30), 'right');
+  assert.equal(directionOf(30, -31), 'up');
+  assert.equal(directionOf(-40, 5), 'left');
+  assert.equal(directionOf(2, 40), 'down');
+
+  // Tap with a little jitter → OK click.
+  {
+    const { j, sent } = make();
+    j.start();
+    j.move(3, -2);
+    j.end();
+    assert.deepEqual(sent, ['ok:Click']);
+  }
+  // Hold still → OK press-and-hold; dragging after that is ignored.
+  {
+    const { j, sent } = make();
+    j.start();
+    advance(400);
+    assert.deepEqual(sent, ['ok:Press']);
+    assert.equal(j.mode, 'ok-hold');
+    j.move(60, 0);
+    advance(1200);
+    j.end();
+    assert.deepEqual(sent, ['ok:Press', 'ok:Release'], 'no direction once OK is held');
+  }
+  // Drag right → one step at once, repeats after the delay, stops on release; never OK.
+  {
+    const { j, sent } = make();
+    j.start();
+    j.move(10, 0);
+    assert.equal(sent.length, 0, 'below the threshold nothing happens');
+    j.move(30, 5);
+    assert.deepEqual(sent, ['right']);
+    advance(349);
+    assert.deepEqual(sent, ['right'], 'no repeat before the delay');
+    advance(1);
+    assert.deepEqual(sent, ['right', 'right*']);
+    advance(260);
+    assert.deepEqual(sent, ['right', 'right*', 'right*', 'right*']);
+    j.end();
+    advance(2000);
+    assert.equal(sent.length, 4, 'repeat stops on release');
+    assert.ok(!sent.some((x) => x.startsWith('ok')), 'a drag never fires OK');
+  }
+  // The OK hold timer is cancelled once the finger starts dragging.
+  {
+    const { j, sent } = make();
+    j.start();
+    j.move(0, 40);
+    advance(500); // repeats at 350 ms and 480 ms; the 400 ms OK-hold timer must not fire
+    assert.deepEqual(sent, ['down', 'down*', 'down*']);
+    assert.ok(!sent.includes('ok:Press'));
+    j.end();
+  }
+  // Switch direction mid-drag → immediate first step in the new direction.
+  {
+    const { j, sent } = make();
+    j.start();
+    j.move(0, -40);
+    j.move(40, -5);
+    assert.deepEqual(sent, ['up', 'right']);
+    j.end();
+  }
+  // Back to centre (hysteresis = half the threshold) stops repeating; out again restarts.
+  {
+    const { j, sent } = make();
+    j.start();
+    j.move(35, 0);
+    j.move(20, 0); // still ≥ 14 px out: keep going right, no new step
+    assert.deepEqual(sent, ['right']);
+    j.move(10, 0); // back inside 14 px
+    assert.equal(j.direction, null);
+    advance(2000);
+    assert.deepEqual(sent, ['right'], 'no repeats while centred');
+    j.move(35, 0);
+    assert.deepEqual(sent, ['right', 'right']);
+    j.move(5, 0);
+    j.end();
+    assert.ok(!sent.some((x) => x.startsWith('ok')), 'returning to centre and lifting is not an OK tap');
+  }
+  // System cancel: no OK tap from a pending touch; a held OK is still released.
+  {
+    const { j, sent } = make();
+    j.start();
+    j.cancel();
+    assert.equal(sent.length, 0, 'cancelled touch is not a tap');
+    j.start();
+    advance(450);
+    j.cancel();
+    advance(2000);
+    assert.deepEqual(sent, ['ok:Press', 'ok:Release']);
+  }
+  ok('OK joystick: tap, hold, drag with repeat, direction switch, centre dead-zone, cancel');
+}
+
 function altstoreSourceChecks() {
   const base = {
     version: '1.2.57',
@@ -660,6 +797,7 @@ async function main() {
   protocolChecks();
   appButtonChecks();
   holdGestureChecks();
+  joystickChecks();
   altstoreSourceChecks();
   await tvSocketWrapperChecks();
   await discoveryChecks();
