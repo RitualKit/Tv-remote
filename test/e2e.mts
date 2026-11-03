@@ -913,7 +913,57 @@ async function fakeTvChecks() {
     assert.equal(r.remote.requestInstalledApps(), false);
     r.remote.disconnect();
   }
-  ok('reconnect: queued first press, stale drop + Press/Release pairing, resume ping (alive/dead), 250 ms first retry');
+  // Review finding (PR #5): holds queued while connecting must keep their duration at the TV.
+  const timesAtTv = (key: string) =>
+    tv.state.received.filter((x: any) => x.msg.params?.DataOfCmd === key).map((x: any) => ({ cmd: x.msg.params.Cmd, at: x.at }));
+  {
+    // Press and Release both queued 1 s apart (fake clock) → replayed 1 s apart (real time).
+    const clock = { t: Date.now() };
+    const r = runRemote(cfg, token, nodeSocket, () => clock.t);
+    r.remote.connect();
+    r.remote.sendKey('KEY_GUIDE', 'Press');
+    clock.t += 1000;
+    r.remote.sendKey('KEY_GUIDE', 'Release');
+    r.remote.sendKey('KEY_TOOLS'); // pressed after the release → must arrive after it
+    await r.waitFor('connected', 2000);
+    await sleep(1300);
+    const t = timesAtTv('KEY_GUIDE');
+    assert.deepEqual(t.map((x: any) => x.cmd), ['Press', 'Release']);
+    assert.ok(t[1].at - t[0].at >= 950, `hold kept (${t[1].at - t[0].at} ms)`);
+    const tools = timesAtTv('KEY_TOOLS');
+    assert.equal(tools.length, 1);
+    assert.ok(tools[0].at >= t[1].at, 'order kept: the later click comes after the Release');
+    r.remote.disconnect();
+  }
+  {
+    // Press queued, connection comes up, finger lifts later → Release delayed by the Press's delay.
+    const r = runRemote(cfg, token);
+    r.remote.connect();
+    r.remote.sendKey('KEY_SOURCE', 'Press');
+    const pressedAt = Date.now();
+    await r.waitFor('connected', 2000);
+    await sleep(300);
+    const heldFor = Date.now() - pressedAt; // what the user "held"
+    r.remote.sendKey('KEY_SOURCE', 'Release');
+    await sleep(heldFor + 200);
+    const t = timesAtTv('KEY_SOURCE');
+    assert.deepEqual(t.map((x: any) => x.cmd), ['Press', 'Release']);
+    assert.ok(t[1].at - t[0].at >= heldFor - 60, `TV saw ${t[1].at - t[0].at} ms, user held ${heldFor} ms`);
+    r.remote.disconnect();
+  }
+  {
+    // holdKey() while connecting: the 600 ms hold is timed from when the Press reaches the TV.
+    const r = runRemote(cfg, token);
+    r.remote.connect();
+    assert.equal(r.remote.holdKey('KEY_RED', 600), true);
+    await r.waitFor('connected', 2000);
+    await sleep(900);
+    const t = timesAtTv('KEY_RED');
+    assert.deepEqual(t.map((x: any) => x.cmd), ['Press', 'Release']);
+    assert.ok(t[1].at - t[0].at >= 580, `full hold at the TV (${t[1].at - t[0].at} ms)`);
+    r.remote.disconnect();
+  }
+  ok('reconnect: queued first press, stale drop + pairing, hold timing kept, resume ping (alive/dead), 250 ms first retry');
 
   // Art Mode.
   assert.equal(await getArtMode(cfg, nodeSocket), 'off');

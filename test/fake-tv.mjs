@@ -69,7 +69,7 @@ export function startFakeTv({ key, cert, securePort, plainPort }) {
       }
       ws.on('message', (d) => {
         const msg = JSON.parse(d.toString());
-        state.received.push({ name, msg });
+        state.received.push({ name, msg, at: Date.now() });
         if (msg.method === 'ms.channel.emit' && msg.params?.event === 'ed.installedApp.get') {
           ws.send(
             JSON.stringify({

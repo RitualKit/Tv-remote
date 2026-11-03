@@ -50,6 +50,8 @@ interface Pending {
   at: number;
   key?: string;
   cmd?: RemoteCmd;
+  /** holdKey(): send the Release this long after the Press actually goes out. */
+  holdMs?: number;
 }
 
 /**
@@ -72,6 +74,13 @@ export class SamsungRemote {
   private pending: Pending[] = [];
   /** True while a resumed connection is being pinged; keys queue meanwhile. */
   private verifying = false;
+  /** Queued keys still being replayed (with their original spacing); new keys wait behind them. */
+  private replayLeft = 0;
+  /**
+   * Keys whose Press went out late from the queue, by how much. Their live Release is delayed by
+   * the same amount, so the TV sees exactly the hold the user made.
+   */
+  private pressDelay = new Map<string, number>();
   private openedAt = 0;
   private suspendedAt: number | null = null;
   private readonly now: () => number;
@@ -171,9 +180,13 @@ export class SamsungRemote {
 
   /** Press, hold for `ms`, release. Used for long-press power (full off on The Frame). */
   holdKey(key: string, ms: number): boolean {
-    if (!this.sendKey(key, 'Press')) return false;
-    setTimeout(() => this.sendKey(key, 'Release'), ms);
-    return true;
+    if (this.canSendNow()) {
+      this.ws!.send(keyMessage(key, 'Press'));
+      setTimeout(() => this.sendKey(key, 'Release'), ms);
+      return true;
+    }
+    // Not connected yet: the hold is timed from when the Press actually reaches the TV.
+    return this.sendRaw(keyMessage(key, 'Press'), { key, cmd: 'Press', holdMs: ms });
   }
 
   launchApp(appId: string): boolean {
@@ -187,10 +200,32 @@ export class SamsungRemote {
 
   // -------------------------------------------------------------------------
 
+  private canSendNow(): boolean {
+    return !!this.ws && this.isConnected && !this.verifying && this.replayLeft === 0;
+  }
+
   /** `queue`: false = never queue (the caller handles "not connected"). */
-  private sendRaw(msg: string, queue: { key?: string; cmd?: RemoteCmd } | false): boolean {
+  private sendRaw(msg: string, queue: { key?: string; cmd?: RemoteCmd; holdMs?: number } | false): boolean {
+    if (this.canSendNow()) {
+      const delay = queue && queue.cmd === 'Release' && queue.key ? this.pressDelay.get(queue.key) : undefined;
+      if (delay !== undefined && queue && queue.key) {
+        this.pressDelay.delete(queue.key);
+        const gen = this.generation;
+        setTimeout(() => {
+          if (gen === this.generation && this.ws && this.isConnected) this.ws.send(msg);
+        }, delay);
+        return true;
+      }
+      this.ws!.send(msg);
+      return true;
+    }
     if (this.ws && this.isConnected && !this.verifying) {
-      this.ws.send(msg);
+      // Connected, but a replay of queued keys is in progress: wait behind it to keep order.
+      if (queue === false) {
+        this.ws.send(msg);
+        return true;
+      }
+      this.pending.push({ msg, at: this.now(), ...queue });
       return true;
     }
     if (!this.verifying) this.connect();
@@ -200,15 +235,18 @@ export class SamsungRemote {
     return true;
   }
 
-  /** Send queued keys that are still fresh. A Release whose Press was dropped is dropped too. */
+  /**
+   * Replay queued keys that are still fresh, keeping their original spacing (so a queued hold
+   * stays a hold for as long as the user held it). A Release whose Press was dropped is dropped
+   * too. Keys arriving during the replay are queued behind it and flushed when it finishes.
+   */
   private flushPending(): void {
-    const ws = this.ws;
-    if (!ws || this.pending.length === 0) return;
+    if (!this.ws || this.pending.length === 0 || this.replayLeft > 0) return;
     const cutoff = this.now() - QUEUE_WINDOW_MS;
     const items = this.pending;
     this.pending = [];
     const droppedPress = new Set<string>();
-    let sent = 0;
+    const fresh: Pending[] = [];
     let dropped = 0;
     for (const p of items) {
       if (p.at < cutoff) {
@@ -222,10 +260,35 @@ export class SamsungRemote {
         continue;
       }
       if (p.key && p.cmd === 'Press') droppedPress.delete(p.key);
-      ws.send(p.msg);
-      sent++;
+      fresh.push(p);
     }
-    this.log(`sent ${sent} queued key${sent === 1 ? '' : 's'}${dropped ? `, dropped ${dropped} stale` : ''}`);
+    this.log(`sending ${fresh.length} queued key${fresh.length === 1 ? '' : 's'}${dropped ? `, dropped ${dropped} stale` : ''}`);
+    if (fresh.length === 0) return;
+
+    const gen = this.generation;
+    const base = fresh[0].at;
+    this.replayLeft = fresh.length;
+    for (const p of fresh) {
+      const go = () => {
+        if (gen !== this.generation || !this.ws || !this.isConnected) {
+          // Link lost mid-replay: put it back; it goes out after the reconnect if still fresh.
+          this.pending.push(p);
+          return;
+        }
+        this.ws.send(p.msg);
+        if (p.key && p.cmd === 'Press' && p.holdMs === undefined) this.pressDelay.set(p.key, Math.max(0, this.now() - p.at));
+        if (p.key && p.cmd === 'Release') this.pressDelay.delete(p.key);
+        if (p.holdMs !== undefined && p.key) {
+          const key = p.key;
+          setTimeout(() => this.sendKey(key, 'Release'), p.holdMs);
+        }
+        this.replayLeft--;
+        if (this.replayLeft === 0) this.flushPending(); // keys pressed during the replay
+      };
+      const delay = p.at - base;
+      if (delay <= 0) go();
+      else setTimeout(go, delay);
+    }
   }
 
   private open(): void {
@@ -358,6 +421,8 @@ export class SamsungRemote {
   private teardown(): void {
     this.generation++;
     this.verifying = false;
+    this.replayLeft = 0;
+    this.pressDelay.clear();
     this.clearTimers();
     const ws = this.ws;
     this.ws = null;
