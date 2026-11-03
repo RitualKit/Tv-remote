@@ -103,7 +103,7 @@ function Remote() {
                 <RemoteButton icon={icon('menu')} label="Menu" onPress={() => r.key(KEYS.menu)} style={styles.flex} />
               </View>
 
-              <DPad onKey={(d, cmd) => r.keyCmd(DPAD_KEYS[d], cmd)} onDragActive={setDpadDragging} />
+              <DPad onKey={(d, cmd) => r.keyCmd(DPAD_KEYS[d], cmd)} onDragActive={setDpadDragging} diagonal={r.settings.diagonalDrag} />
 
               <View style={styles.row}>
                 <RemoteButton icon={icon('arrow-undo')} label="Back" onPress={() => r.key(KEYS.back)} style={styles.flex} />
@@ -149,6 +149,7 @@ function Remote() {
         onSaveTvIp={r.saveTvIp}
         onForgetPairing={r.forgetPairing}
         onResetCertificate={r.resetCertificate}
+        onDiagonalDragChange={r.setDiagonalDrag}
       />
     </SafeAreaView>
   );

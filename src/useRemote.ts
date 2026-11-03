@@ -182,6 +182,8 @@ export function useRemote() {
     [addLog],
   );
 
+  const setDiagonalDrag = useCallback((on: boolean) => patchSettings({ diagonalDrag: on }), [patchSettings]);
+
   /** Replace the app-button list (add / remove / reorder in the editor). */
   const setApps = useCallback((apps: TvApp[]) => patchSettings({ apps }), [patchSettings]);
 
@@ -234,5 +236,6 @@ export function useRemote() {
     tvApps,
     setApps,
     checkApp,
+    setDiagonalDrag,
   };
 }

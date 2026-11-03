@@ -6,7 +6,8 @@ paid Apple account are needed.
 
 It has:
 - D-pad, Back, Home, Menu, Source, Info, Guide. **Drag the OK button** like a joystick to move (keep it
-  out there to keep moving; back to the centre to stop). Hold **OK** still on an app tile for its
+  out there to keep moving; back to the centre to stop). Drag diagonally to move diagonally (the app
+  alternates up/down and left/right; switch it off in TV setup → Remote → *Diagonal dragging*). Hold **OK** still on an app tile for its
   options (Move / Remove). The arrow buttons still work too (hold to keep scrolling)
 - volume and channel, with repeat-while-held
 - mute and Power (tap toggles Art↔TV, hold turns the TV off), plus an Art/TV button

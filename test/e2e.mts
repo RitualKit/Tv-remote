@@ -44,7 +44,7 @@ import { httpProbe, scanForTvs, subnetCandidates, subnetLabel } from '../src/tv/
 import http from 'node:http';
 import { buildSource } from '../tools/make-altstore-source.mjs';
 import { createHoldGesture, createRepeatGesture, HoldCmd } from '../src/ui/holdGesture';
-import { createJoystick, directionOf } from '../src/ui/joystick';
+import { createJoystick, directionOf, keysFor } from '../src/ui/joystick';
 import type { AddressInfo } from 'node:net';
 import { startFakeTv, FAKE_TOKEN, REVOKED_TOKEN, INSTALLED_APPS } from './fake-tv.mjs';
 
@@ -416,12 +416,13 @@ function joystickChecks() {
   const clearTimer = (h: unknown) => {
     timers = timers.filter((x) => x !== h);
   };
-  const make = () => {
+  const make = (diag = { on: false }) => {
     timers = [];
     const sent: string[] = [];
     const ok = createHoldGesture({ send: (cmd) => sent.push(`ok:${cmd}`), now: () => t, setTimer, clearTimer });
     const j = createJoystick({
       ok,
+      diagonal: () => diag.on,
       onDirection: (d, repeat) => sent.push(repeat ? `${d}*` : d),
       threshold: 28,
       holdAfterMs: 400,
@@ -526,7 +527,66 @@ function joystickChecks() {
     advance(2000);
     assert.deepEqual(sent, ['ok:Press', 'ok:Release']);
   }
-  ok('OK joystick: tap, hold, drag with repeat, direction switch, centre dead-zone, cancel');
+  // ── Diagonals ──
+  assert.deepEqual(keysFor('up-right'), ['up', 'right']);
+  assert.deepEqual(keysFor('down-left'), ['down', 'left']);
+  assert.deepEqual(keysFor('left'), ['left']);
+  assert.equal(directionOf(30, -30, true), 'up-right');
+  assert.equal(directionOf(-30, 30, true), 'down-left');
+  assert.equal(directionOf(40, -10, true), 'right', '14° is in the right-zone (±25°)');
+  assert.equal(directionOf(40, -21, true), 'up-right', '27.7° is in the up-right zone (45±20°)');
+  assert.equal(directionOf(30, -30, false), 'up', 'diagonals off: tie goes to vertical, as before');
+
+  // 45° drag → both keys at once, then alternating repeats.
+  {
+    const { j, sent } = make({ on: true });
+    j.start();
+    j.move(30, -30);
+    assert.deepEqual(sent, ['up', 'right']);
+    assert.equal(j.direction, 'up-right');
+    advance(350);
+    advance(130);
+    advance(130);
+    assert.deepEqual(sent, ['up', 'right', 'up*', 'right*', 'up*']);
+    j.end();
+  }
+  // Hysteresis: a right drag rising to 30° stays "right"; past 33° (25+8) into the diagonal it switches.
+  {
+    const { j, sent } = make({ on: true });
+    j.start();
+    j.move(40, -14.6); // 20°
+    j.move(40, -23); //   ~30°: still right (inside 25° + 8°)
+    assert.deepEqual(sent, ['right']);
+    j.move(40, -30); //   ~36.9°: past 33° and inside up-right's ±20°
+    assert.deepEqual(sent, ['right', 'up', 'right']);
+    assert.equal(j.direction, 'up-right');
+    j.move(40, -26); //   ~33°: still up-right (inside 20° + 8° of 45°)
+    assert.equal(sent.length, 3, 'no flicker back to right near the edge');
+    j.end();
+  }
+  // Diagonals off → a 45° drag is a single cardinal, never two keys.
+  {
+    const { j, sent } = make({ on: false });
+    j.start();
+    j.move(30, -30);
+    advance(350 + 130 * 2);
+    assert.deepEqual(sent, ['up', 'up*', 'up*', 'up*']);
+    j.end();
+  }
+  // The setting is read live: switching it off mid-drag drops back to a cardinal.
+  {
+    const flag = { on: true };
+    const { j, sent } = make(flag);
+    j.start();
+    j.move(30, -32);
+    assert.deepEqual(sent, ['up', 'right']);
+    flag.on = false;
+    j.move(31, -33);
+    assert.equal(j.direction, 'up');
+    assert.deepEqual(sent, ['up', 'right', 'up']);
+    j.end();
+  }
+  ok('OK joystick: tap, hold, drag with repeat, switch, dead-zone, cancel, diagonals + hysteresis');
 }
 
 function altstoreSourceChecks() {

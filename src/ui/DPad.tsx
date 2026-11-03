@@ -4,7 +4,7 @@ import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from './theme';
 import { HoldCmd, createHoldGesture, createRepeatGesture } from './holdGesture';
-import { Direction, createJoystick } from './joystick';
+import { Direction, createJoystick, keysFor } from './joystick';
 
 export type Dir = 'up' | 'down' | 'left' | 'right' | 'ok';
 
@@ -25,19 +25,24 @@ const MAX_TRAVEL = 46;
 export function DPad({
   onKey,
   onDragActive,
+  diagonal = true,
 }: {
   onKey: (d: Dir, cmd: HoldCmd) => void;
   onDragActive?: (active: boolean) => void;
+  /** Allow diagonal drags on OK (imitated with alternating keys). */
+  diagonal?: boolean;
 }) {
   const [dragDir, setDragDir] = useState<Direction | null>(null);
+  // A diagonal drag lights up both of its arrows.
+  const lit = dragDir ? keysFor(dragDir) : [];
   const arrow = (d: Exclude<Dir, 'ok'>, icon: keyof typeof Ionicons.glyphMap, pos: object) => (
     <DPadButton
       dir={d}
       onKey={onKey}
-      style={[styles.arrow, pos, dragDir === d && styles.arrowPressed]}
+      style={[styles.arrow, pos, lit.includes(d) && styles.arrowPressed]}
       pressedStyle={styles.arrowPressed}
     >
-      <Ionicons name={icon} size={34} color={dragDir === d ? colors.accent : colors.text} />
+      <Ionicons name={icon} size={34} color={lit.includes(d) ? colors.accent : colors.text} />
     </DPadButton>
   );
 
@@ -47,7 +52,7 @@ export function DPad({
       {arrow('down', 'chevron-down', styles.bottom)}
       {arrow('left', 'chevron-back', styles.left)}
       {arrow('right', 'chevron-forward', styles.right)}
-      <DragOk onKey={onKey} onDragActive={onDragActive} onDirection={setDragDir} />
+      <DragOk onKey={onKey} onDragActive={onDragActive} onDirection={setDragDir} diagonal={diagonal} />
     </View>
   );
 }
@@ -57,6 +62,7 @@ function DragOk(props: {
   onKey: (d: Dir, cmd: HoldCmd) => void;
   onDragActive?: (active: boolean) => void;
   onDirection: (d: Direction | null) => void;
+  diagonal: boolean;
 }) {
   const latest = useRef(props);
   latest.current = props;
@@ -68,6 +74,7 @@ function DragOk(props: {
     createJoystick({
       ok: okGesture,
       holdAfterMs: HOLD_AFTER_MS,
+      diagonal: () => latest.current.diagonal,
       onOkHoldStart: () => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
       },
