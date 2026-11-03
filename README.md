@@ -64,33 +64,64 @@ npm run probe -- 192.168.1.50 --art --apps     # press Allow on the TV
 ```
 You should see `ms.channel.connect`, the volume moves, and Art Mode status and installed apps print.
 
-## Build the .ipa (GitHub Actions)
+## Releases and automatic updates
 
-1. GitHub → **Actions** → **iOS IPA (for AltStore)** → **Run workflow**.
-2. When it finishes (~15–25 min), download the **FrameRemote-ipa** artifact from the run page
-   and unzip it to get `FrameRemote.ipa`.
+Every change merged into `main` is built and published automatically:
+1. A pull request is merged into `main`.
+2. The **Release to AltStore** workflow builds `FrameRemote.ipa`, about 15–25 min.
+3. It publishes a GitHub Release `v1.2.<n>` containing the `.ipa` and an AltStore **source**
+   (`source.json`).
+4. AltStore sees the new version and offers the update.
 
-Pushing a tag `v*` also triggers a build.
+Changes to docs (`*.md`, `docs/`) or tests only don't trigger a release. You can also start one
+by hand: Actions → **Release to AltStore** → **Run workflow**.
 
-> The repo is private, so macOS runner minutes count 10× against GitHub's free 2,000/month,
-> which is about **8 builds**. A cheap Linux job runs the tests first, so broken commits don't
-> use macOS minutes.
+### Add the source to AltStore (once)
 
-## Install (and update) with AltStore
-
-1. Put `FrameRemote.ipa` where the iPhone's **Files** app can see it. The easiest way is to drop
-   it into **iCloud Drive** on the PC (iCloud for Windows is already installed). Downloading the
-   artifact in Safari on the phone also works.
-2. On the iPhone: AltStore → **My Apps** → **+** (top left) → pick `FrameRemote.ipa`. Keep the PC
-   with AltServer on and on the same Wi-Fi while it installs.
+1. On the iPhone: AltStore → **Sources** → **+** → paste:
+   ```
+   https://github.com/RitualKit/Tv-remote/releases/latest/download/source.json
+   ```
+2. Open the new **Frame Remote** source and tap **Free / Get** to install. Keep the PC with
+   AltServer on and on the same Wi-Fi.
+   - If you installed Frame Remote by hand before and AltStore won't replace it, delete the old
+     copy first. You'll then pair with the TV once more.
 3. Open Frame Remote and allow **Local Network**. The setup sheet scans your Wi-Fi and lists the
    Samsung TVs that answer, with Frames first. Tap yours, or type its IP. Then tap
    **Save & connect** and press **Allow** on the TV.
    - If the scan finds nothing on the first try, iOS may still have been asking for Local
      Network access. Allow it and tap **Scan Wi-Fi for TVs** again.
 
-To **update**, build a new `.ipa` and install it the same way. The pairing token and the TV's
-certificate fingerprint are kept.
+### Getting updates
+
+AltStore → **My Apps** shows an update when a new release is out; tap **Update**. AltStore needs
+AltServer reachable to sign it, just like a refresh.
+
+The pairing token, TV certificate and app buttons are kept. TV setup → bottom of the sheet shows
+the installed version, e.g. *Frame Remote 1.2.57 (57)*.
+
+### Installing a build by hand (fallback)
+
+Download `FrameRemote.ipa` from a release on the repo's **Releases** page, or from a workflow
+run's artifact. Put it in iCloud Drive, then AltStore → **My Apps** → **+** → pick it.
+
+The newest 5 releases are kept, so you can go back one if an update misbehaves.
+
+### Who can change `main`
+
+The **Protect main** ruleset means nothing lands on `main`, and so nothing ships, without a pull
+request that you merge. Not even pushes from your own account can bypass it. To set it up
+(once, after making the repo public): GitHub → **Settings** → **Rules** → **Rulesets** →
+**New ruleset** → **New branch ruleset**:
+- **Name:** `Protect main`; **Enforcement:** Active.
+- **Bypass list:** leave empty.
+- **Target branches:** Add target → **Include default branch**.
+- **Rules:**
+  - ✓ **Restrict deletions**
+  - ✓ **Block force pushes**
+  - ✓ **Require a pull request before merging**, with required approvals **0**. You can't approve
+    your own PR; merging it is the approval.
+  - ✓ **Require status checks to pass** → add **checks** (the PR workflow).
 
 ## Customising the app buttons
 
@@ -110,11 +141,11 @@ Your buttons are saved with the rest of the settings, and kept across AltStore u
 
 ## Making changes
 
-There is only a release build, so **every change has to go through a new CI build and an
-AltStore reinstall** before it reaches the phone. To save builds:
-- run `npm run typecheck` and `npm test` first;
-- use `npm run probe` to try TV behaviour from the PC;
-- group several changes into one build.
+Changes reach the phone only as a merged pull request → new release → AltStore update:
+- Claude (or you) pushes a branch and opens a PR. The **checks** workflow (typecheck + tests) must
+  pass, then you merge.
+- Run `npm run typecheck` and `npm test` locally first. Use `npm run probe` to try TV behaviour
+  from the PC without a build.
 
 ## Free Apple ID limits
 
@@ -159,7 +190,9 @@ AltStore reinstall** before it reaches the phone. To save builds:
 - **An app button does nothing**: open **Edit**. If the app shows **Not found**, its ID differs on
   your TV. Remove it and re-add it from **On your TV**, or add it by ID (`npm run probe -- <ip> --apps`).
 - **CI build failed**: the run uploads `xcodebuild-log`, and the step output shows the first
-  `error:` lines.
+  `error:` lines. Nothing is published when a build fails; the previous release stays current.
+- **No update in AltStore**: AltStore → Sources → pull to refresh. Check the release exists on the
+  repo's Releases page and that the source URL opens in Safari (the repo must be public).
 
 ## Checks
 
@@ -188,5 +221,7 @@ src/useRemote.ts               React hook: settings, cert pinning, AppState reco
 src/ui/*                       buttons, D-pad, number pad, status pill, setup sheet, app-button editor
 tools/probe.mjs                TV diagnostics from a PC
 test/                          fake TV + end-to-end checks
-.github/workflows/ios-ipa.yml  unsigned IPA build
+.github/workflows/ios-ipa.yml  release: unsigned IPA → GitHub Release + AltStore source (push to main)
+.github/workflows/checks.yml   required PR check: typecheck + tests
+tools/make-altstore-source.mjs builds source.json for each release
 ```

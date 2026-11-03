@@ -1,22 +1,32 @@
-# Builds an UNSIGNED iOS .ipa of Frame Remote on a GitHub macOS runner (no Mac or paid Apple
-# account needed). AltStore re-signs it with your Apple ID when you install it on the iPhone.
+# Release pipeline: every push to main (= every merged PR) builds an UNSIGNED Frame Remote .ipa
+# on a GitHub macOS runner and publishes it as a GitHub Release together with an AltStore source.
+# AltStore re-signs the app with your free Apple ID when it installs the update.
 #
-# Run it: GitHub → Actions → "iOS IPA (for AltStore)" → Run workflow. Pushing a tag v* also builds.
-# Download the "FrameRemote-ipa" artifact from the run page and unzip it to get FrameRemote.ipa.
+# Add this source to AltStore once (Sources → +):
+#   https://github.com/RitualKit/Tv-remote/releases/latest/download/source.json
 #
-# Cost: this repo is private, so macOS minutes count 10x against the free 2,000/month
-# (~200 macOS minutes ≈ 8 builds). The cheap Linux "checks" job runs first so a broken commit
-# never reaches the macOS job.
-name: iOS IPA (for AltStore)
+# Version: 1.2.<run number>, build <run number> — strictly increasing, which is what AltStore
+# compares to offer updates. Docs/test-only pushes don't release. Can also be run by hand
+# (Actions → "Release to AltStore" → Run workflow). The repo is public, so runner minutes are free.
+name: Release to AltStore
 
 on:
-  workflow_dispatch:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'test/**', '.github/workflows/checks.yml']
+  workflow_dispatch:
 
+# One release at a time; a newer push supersedes a running one.
 concurrency:
-  group: ios-ipa-${{ github.ref }}
+  group: release
   cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  APP_VERSION: 1.2.${{ github.run_number }}
+  APP_BUILD: ${{ github.run_number }}
 
 jobs:
   checks:
@@ -51,7 +61,7 @@ jobs:
           XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n1)
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
-          echo "node $(node -v)"
+          echo "node $(node -v) · building $APP_VERSION ($APP_BUILD)"
 
       - run: npm ci
 
@@ -94,13 +104,27 @@ jobs:
             }
           tail -5 build/xcodebuild.log
 
-      - name: Package .ipa
+      - name: Package .ipa and read its Info.plist
         run: |
           APP=$(find build/DerivedData/Build/Products -maxdepth 2 -name '*.app' -type d | head -n1)
           echo "app=$APP"
           if [ ! -f "$APP/main.jsbundle" ]; then
             echo "::error::Release build has no embedded JS bundle"; exit 1
           fi
+          plutil -convert json -o build/info.json "$APP/Info.plist"
+          # The AltStore source must describe exactly this binary: same version, build and usage
+          # descriptions (AltStore checks declared permissions against the app).
+          node -e '
+            const fs = require("fs");
+            const info = JSON.parse(fs.readFileSync("build/info.json", "utf8"));
+            const want = { CFBundleShortVersionString: process.env.APP_VERSION, CFBundleVersion: process.env.APP_BUILD };
+            for (const [k, v] of Object.entries(want)) {
+              if (info[k] !== v) { console.error(`::error::${k} is ${info[k]}, expected ${v}`); process.exit(1); }
+            }
+            const privacy = Object.fromEntries(Object.entries(info).filter(([k]) => /^NS\w+UsageDescription$/.test(k)));
+            fs.writeFileSync("build/privacy.json", JSON.stringify(privacy, null, 2));
+            console.log("privacy keys:", Object.keys(privacy).join(", ") || "(none)");
+          '
           mkdir -p build/Payload
           cp -R "$APP" build/Payload/
           (cd build && zip -qry FrameRemote.ipa Payload)
@@ -109,7 +133,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: FrameRemote-ipa
-          path: build/FrameRemote.ipa
+          path: |
+            build/FrameRemote.ipa
+            build/privacy.json
           retention-days: 30
           if-no-files-found: error
 
@@ -119,3 +145,59 @@ jobs:
           name: xcodebuild-log
           path: build/xcodebuild.log
           retention-days: 7
+
+  publish:
+    needs: ipa
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release; nothing else
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: FrameRemote-ipa
+          path: build
+
+      - name: Build AltStore source
+        run: |
+          node tools/make-altstore-source.mjs \
+            --version "$APP_VERSION" --build "$APP_BUILD" \
+            --ipa build/FrameRemote.ipa --privacy build/privacy.json \
+            --repo "$REPO" --notes "$(git log -1 --pretty=%s)" --out build/source.json
+
+      - name: Create GitHub Release
+        run: |
+          TAG="v$APP_VERSION"
+          # A re-run of the same workflow run reuses the version: replace that release.
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" build/FrameRemote.ipa build/source.json \
+            --target "$GITHUB_SHA" --latest \
+            --title "Frame Remote $APP_VERSION" \
+            --notes "$(git log -1 --pretty=%B)"
+
+      - name: Keep only the newest 5 releases
+        run: |
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
+          while read -r tag; do
+            echo "deleting old release $tag"
+            gh release delete "$tag" --yes --cleanup-tag
+          done
+
+      - name: Check the public source URL
+        run: |
+          URL="https://github.com/$REPO/releases/latest/download/source.json"
+          GOT=$(curl -fsSL "$URL" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).apps[0].versions[0].version))') || GOT=""
+          if [ "$GOT" = "$APP_VERSION" ]; then
+            echo "AltStore source is live: $URL → $GOT"
+          else
+            echo "::warning::$URL returned '$GOT', expected $APP_VERSION. Is the repository public?"
+          fi

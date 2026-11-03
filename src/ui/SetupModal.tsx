@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Constants from 'expo-constants';
 import { isPrivateIPv4 } from '../tv/protocol';
 import { getDeviceInfo } from '../tv/rest';
 import { Settings } from '../storage';
@@ -175,11 +176,22 @@ export function SetupModal({
                 ))
               )}
             </View>
+
+            <Text style={styles.version} selectable>
+              {appVersionLabel()}
+            </Text>
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
     </Modal>
   );
+}
+
+/** e.g. "Frame Remote 1.2.57 (57)": shows which AltStore release is installed. */
+function appVersionLabel(): string {
+  const cfg = Constants.expoConfig;
+  const build = cfg?.ios?.buildNumber;
+  return `${cfg?.name ?? 'Frame Remote'} ${cfg?.version ?? '?'}${build ? ` (${build})` : ''}`;
 }
 
 const styles = StyleSheet.create({
@@ -233,6 +245,7 @@ const styles = StyleSheet.create({
   check: { color: colors.accent, fontSize: 18, fontWeight: '700', width: 18, textAlign: 'center' },
   flex: { flex: 1 },
   test: { color: colors.text, fontSize: 14, marginTop: 8, lineHeight: 20 },
+  version: { color: colors.textDim, fontSize: 12, textAlign: 'center', marginTop: 24 },
   logBox: { backgroundColor: colors.surface, borderRadius: 12, padding: 12, gap: 2 },
   logLine: { color: colors.textDim, fontSize: 11, fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }) },
 });

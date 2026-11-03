@@ -139,3 +139,22 @@ AltStore's own site, faq.altstore.io, is blocked from this sandbox. The points b
   - restore edge cases and app-list parsing;
   - app status against the fake TV, including unreachable = unknown;
   - the app-list round trip over the socket.
+
+## Addendum: automatic AltStore updates and a protected `main`
+- **Repo public**, so release assets and `source.json` are downloadable without auth, and Actions minutes are free.
+- **`ios-ipa.yml` ("Release to AltStore")**, on push to `main`, except docs/tests-only changes:
+  1. `checks`;
+  2. `ipa` (macOS): verifies `CFBundleShortVersionString`/`CFBundleVersion` = `1.2.<run>`/`<run>` and exports the `NS*UsageDescription` keys;
+  3. `publish`: `make-altstore-source.mjs` → `source.json`, then `gh release create v1.2.<run>` with ipa + source, then keep the newest 5 releases, then check the public source URL.
+- **Stable source URL:** `https://github.com/RitualKit/Tv-remote/releases/latest/download/source.json`.
+  - The feed carries AltStore 2.x `versions[]`, `buildVersion` and `appPermissions`, plus legacy v1 fields and `sourceURL`.
+  - It was checked against the community schema's required fields.
+- **`main` protection:**
+  - the "Protect main" ruleset (no bypass; PR required, 0 approvals; status check `checks`; no deletions or force pushes);
+  - `checks.yml` runs on PRs;
+  - Claude pushes `claude/*` branches and opens PRs, and the owner merges.
+- **App:** TV setup shows "Frame Remote <version> (<build>)" via `expo-constants`.
+- **Unverified:**
+  - whether AltStore Classic honours `appPermissions` exactly as generated;
+  - the `releases/latest/download` redirect (fallback: serve `source.json` from a branch via raw.githubusercontent);
+  - whether updates install without a tap (expect one tap, with AltServer reachable).

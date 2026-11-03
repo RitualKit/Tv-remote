@@ -42,8 +42,10 @@ Docs: https://docs.expo.dev/eas/index.md
 
 ## This project
 
-- iOS only. Shipped as an **unsigned IPA built on GitHub Actions** (`.github/workflows/ios-ipa.yml`) and installed and refreshed with **AltStore** (Classic) using a free Apple ID. It does **not** run in Expo Go: it needs the local native module `modules/tv-socket`.
-- There is a **single release build** and no dev client. A change reaches the phone only through a new CI build and an AltStore reinstall. macOS minutes are scarce on this private repo, so verify locally first and batch changes.
+- iOS only. Shipped as an **unsigned IPA built on GitHub Actions** (`.github/workflows/ios-ipa.yml`) and installed and updated with **AltStore** (Classic) from the repo's own AltStore source, using a free Apple ID. It does **not** run in Expo Go: it needs the local native module `modules/tv-socket`.
+- There is a **single release build** and no dev client. **Every merge into `main` ships**: `.github/workflows/ios-ipa.yml` builds the IPA and publishes a GitHub Release plus an AltStore source (`tools/make-altstore-source.mjs`). AltStore then offers the update.
+- `main` is protected (ruleset "Protect main"): **never push to `main` and never merge PRs.** Push to a `claude/<topic>` branch and open a PR. The required `checks` workflow must pass; the owner reviews and merges.
+- Versions come from CI (`APP_VERSION=1.2.<run>`, `APP_BUILD=<run>` in `app.config.ts`); don't hand-edit them.
 - Add packages with `npx expo install`. Keep native code limited to `modules/`.
 - Single screen (`App.tsx`). Expo Router is intentionally not used.
 - TV protocol logic lives in `src/tv/` as plain TypeScript; sockets are injected via `SocketFactory` (`src/tv/socket.ts`).
