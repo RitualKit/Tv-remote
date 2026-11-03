@@ -12,7 +12,8 @@ It has:
 - a collapsible number pad and app shortcuts (Netflix / YouTube / Prime Video / Disney+ by default)
 - haptics, a connection status pill and auto-reconnect
 - finds the TV on your Wi-Fi automatically (subnet scan), or takes a typed IP
-- customisable app buttons: pick from the TV's own app list or a built-in catalogue, or add any app by ID
+- an **Apps** page (swipe left from the remote, or tap the page dots) with big tiles for your apps;
+  customise them from the TV's own app list, a built-in catalogue, or any app ID
 
 Research and design decisions are in [docs/PLAN.md](docs/PLAN.md).
 
@@ -126,7 +127,7 @@ request that you merge. Not even pushes from your own account can bypass it. To 
 
 ## Customising the app buttons
 
-Tap **Edit** at the end of the app row, or long-press any app button.
+Swipe to the **Apps** page, then tap **Edit apps**, or long-press any app tile.
 - **Your buttons:** each shows **On TV** or **Not found**, based on asking the TV about that app's ID.
   - A grey **?** means the TV couldn't be asked, e.g. it's off. Tap a badge to check again.
   - Reorder with ⌃ ⌄, remove with ✕.
@@ -219,7 +220,7 @@ src/useTvScan.ts               scan hook: phone IP via expo-network, progress, r
 src/tv/keys.ts                 KEY_* codes
 src/tv/apps.ts                 app catalogue + button list logic (pure)
 src/useRemote.ts               React hook: settings, cert pinning, AppState reconnect, actions
-src/ui/*                       buttons, D-pad, number pad, status pill, setup sheet, app-button editor
+src/ui/*                       buttons, D-pad, number pad, status pill, Apps grid, setup sheet, app-button editor
 tools/probe.mjs                TV diagnostics from a PC
 test/                          fake TV + end-to-end checks
 .github/workflows/ios-ipa.yml  release: unsigned IPA → GitHub Release + AltStore source (push to main)
