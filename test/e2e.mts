@@ -42,6 +42,7 @@ import {
 import { TvSocket, TvSocketEvents, TvSocketNative } from '../modules/tv-socket/src/TvSocket';
 import { httpProbe, scanForTvs, subnetCandidates, subnetLabel } from '../src/tv/discovery';
 import http from 'node:http';
+import { buildSource } from '../tools/make-altstore-source.mjs';
 import type { AddressInfo } from 'node:net';
 import { startFakeTv, FAKE_TOKEN, REVOKED_TOKEN, INSTALLED_APPS } from './fake-tv.mjs';
 
@@ -261,6 +262,71 @@ function appButtonChecks() {
   ok('app buttons: catalog, custom apps, add/remove/move, restore, TV app list');
 }
 
+function altstoreSourceChecks() {
+  const base = {
+    version: '1.2.57',
+    build: '57',
+    date: '2026-11-03T12:00:00Z',
+    size: 31_457_280,
+    downloadURL: 'https://github.com/RitualKit/Tv-remote/releases/download/v1.2.57/FrameRemote.ipa',
+    iconURL: 'https://raw.githubusercontent.com/RitualKit/Tv-remote/main/assets/icon.png',
+    sourceURL: 'https://github.com/RitualKit/Tv-remote/releases/latest/download/source.json',
+    notes: 'Add customisable app buttons',
+    privacy: { NSLocalNetworkUsageDescription: 'Talks to your TV', CFBundleName: 'not a usage key', NSFooUsageDescription: '' },
+  };
+  const src = buildSource(base);
+  const app = src.apps[0];
+  assert.equal(src.identifier, 'com.ritualkit.frameremote.source');
+  assert.equal(src.sourceURL, base.sourceURL);
+  assert.equal(app.bundleIdentifier, 'com.ritualkit.frameremote', 'must match app.config.ts');
+  assert.equal(app.versions.length, 1);
+  assert.deepEqual(
+    { ...app.versions[0] },
+    {
+      version: '1.2.57',
+      buildVersion: '57',
+      date: '2026-11-03T12:00:00.000Z',
+      localizedDescription: 'Add customisable app buttons',
+      downloadURL: base.downloadURL,
+      size: 31_457_280,
+      minOSVersion: '16.4',
+    },
+  );
+  assert.deepEqual(app.appPermissions, { entitlements: [], privacy: { NSLocalNetworkUsageDescription: 'Talks to your TV' } });
+  assert.equal(app.version, '1.2.57', 'legacy fields mirror versions[0]');
+  assert.equal(app.downloadURL, base.downloadURL);
+  assert.equal(buildSource({ ...base, notes: '  ' }).apps[0].versions[0].localizedDescription, 'Build 57');
+  for (const [k, v] of [
+    ['version', '1.2'],
+    ['version', 'v1.2.3'],
+    ['build', 'x'],
+    ['size', 0],
+    ['downloadURL', 'http://insecure/FrameRemote.ipa'],
+    ['iconURL', 'not a url'],
+    ['sourceURL', 'ftp://x/source.json'],
+    ['date', 'yesterday'],
+  ] as const) {
+    assert.throws(() => buildSource({ ...base, [k]: v } as any), Error, `rejects ${k}=${v}`);
+  }
+
+  // CLI, as CI runs it.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'altsrc-'));
+  fs.writeFileSync(`${dir}/FrameRemote.ipa`, Buffer.alloc(1234, 7));
+  fs.writeFileSync(`${dir}/privacy.json`, JSON.stringify({ NSLocalNetworkUsageDescription: 'LAN' }));
+  const cli = path.join(path.dirname(new URL(import.meta.url).pathname), '../tools/make-altstore-source.mjs');
+  execFileSync(process.execPath, [cli, '--version', '1.2.9', '--build', '9', '--ipa', `${dir}/FrameRemote.ipa`,
+    '--privacy', `${dir}/privacy.json`, '--repo', 'RitualKit/Tv-remote', '--notes', 'hello', '--out', `${dir}/source.json`], { stdio: 'pipe' });
+  const out = JSON.parse(fs.readFileSync(`${dir}/source.json`, 'utf8'));
+  const v = out.apps[0].versions[0];
+  assert.equal(v.downloadURL, 'https://github.com/RitualKit/Tv-remote/releases/download/v1.2.9/FrameRemote.ipa');
+  assert.equal(out.apps[0].iconURL, 'https://raw.githubusercontent.com/RitualKit/Tv-remote/main/assets/icon.png');
+  assert.equal(v.size, 1234);
+  assert.equal(out.sourceURL, 'https://github.com/RitualKit/Tv-remote/releases/latest/download/source.json');
+  assert.deepEqual(out.apps[0].appPermissions.privacy, { NSLocalNetworkUsageDescription: 'LAN' });
+  assert.throws(() => execFileSync(process.execPath, [cli, '--version', '1.2.9'], { stdio: 'pipe' }), 'missing args fail');
+  ok('AltStore source: structure, permissions filter, validation, CLI');
+}
+
 async function discoveryChecks() {
   // Subnet maths.
   const c = subnetCandidates('192.168.1.23');
@@ -456,6 +522,7 @@ async function fakeTvChecks() {
 async function main() {
   protocolChecks();
   appButtonChecks();
+  altstoreSourceChecks();
   await tvSocketWrapperChecks();
   await discoveryChecks();
   await fakeTvChecks();

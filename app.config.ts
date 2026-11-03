@@ -1,17 +1,26 @@
 import type { ExpoConfig } from 'expo/config';
 
 // Single release build: JS is bundled into the app, installed and refreshed with AltStore.
+//
+// CI sets APP_VERSION=1.2.<run> and APP_BUILD=<run> so every release is strictly newer; AltStore
+// compares the source's newest version/buildVersion with the installed CFBundleShortVersionString
+// / CFBundleVersion to offer updates.
+const version = process.env.APP_VERSION || '1.2.0';
+const buildNumber = process.env.APP_BUILD || '1';
+if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`APP_VERSION must look like 1.2.3, got "${version}"`);
+if (!/^\d+$/.test(buildNumber)) throw new Error(`APP_BUILD must be a whole number, got "${buildNumber}"`);
+
 const config: ExpoConfig = {
   name: 'Frame Remote',
   slug: 'frame-remote',
-  version: '1.1.0',
+  version,
   orientation: 'portrait',
   icon: './assets/icon.png',
   userInterfaceStyle: 'dark',
   platforms: ['ios'],
   ios: {
     bundleIdentifier: 'com.ritualkit.frameremote',
-    buildNumber: '2',
+    buildNumber,
     supportsTablet: false,
     infoPlist: {
       // Shown in the iOS prompt the first time the app talks to the TV.

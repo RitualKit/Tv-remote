@@ -1,0 +1,24 @@
+# Required status check for pull requests into main (see the "Protect main" ruleset in README).
+# Read-only and secret-free, so it is safe for pull requests from forks.
+name: checks
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
