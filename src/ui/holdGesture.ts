@@ -15,6 +15,7 @@ export interface HoldGestureOptions {
   minHoldMs?: number;
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
 }
 
 export interface HoldGesture {
@@ -34,26 +35,55 @@ export function createHoldGesture({
   minHoldMs = DEFAULT_MIN_HOLD_MS,
   now = Date.now,
   setTimer = setTimeout,
+  clearTimer = (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
 }: HoldGestureOptions): HoldGesture {
+  /** When the TV-side key went down; null while the key is up on the TV. */
   let pressedAt: number | null = null;
+  /** Finger is down on a recognised hold (vs. lifted while a deferred Release is pending). */
+  let fingerDown = false;
+  /** Deferred Release from a hold that was lifted before `minHoldMs`. */
+  let pendingRelease: unknown = null;
+
+  const release = () => {
+    pendingRelease = null;
+    pressedAt = null;
+    send('Release');
+  };
+  /** Send a deferred Release right now (keeps Press/Release strictly paired and ordered). */
+  const flushPending = () => {
+    if (pendingRelease === null) return;
+    clearTimer(pendingRelease);
+    release();
+  };
+
   return {
     tap() {
-      if (pressedAt === null) send('Click');
+      if (fingerDown) return;
+      flushPending();
+      send('Click');
     },
     holdStart() {
-      if (pressedAt !== null) return;
+      if (fingerDown) return;
+      fingerDown = true;
+      if (pendingRelease !== null) {
+        // Still held on the TV from the previous hold: cancel its Release and carry on as one
+        // continuous hold instead of sending a second Press (and a Release mid-hold).
+        clearTimer(pendingRelease);
+        pendingRelease = null;
+        return;
+      }
       pressedAt = now();
       send('Press');
     },
     end() {
-      if (pressedAt === null) return;
-      const wait = pressedAt + minHoldMs - now();
-      pressedAt = null;
-      if (wait > 0) setTimer(() => send('Release'), wait);
-      else send('Release');
+      if (!fingerDown) return;
+      fingerDown = false;
+      const wait = (pressedAt ?? now()) + minHoldMs - now();
+      if (wait > 0) pendingRelease = setTimer(release, wait);
+      else release();
     },
     get holding() {
-      return pressedAt !== null;
+      return fingerDown;
     },
   };
 }
