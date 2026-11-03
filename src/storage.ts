@@ -11,9 +11,17 @@ export interface Settings {
   certSha256: string | null;
   /** App shortcut buttons, in display order. */
   apps: TvApp[];
+  /** Dragging OK diagonally moves diagonally (alternating keys). */
+  diagonalDrag: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { tvIp: '', token: null, certSha256: null, apps: defaultApps() };
+export const DEFAULT_SETTINGS: Settings = {
+  tvIp: '',
+  token: null,
+  certSha256: null,
+  apps: defaultApps(),
+  diagonalDrag: true,
+};
 
 export async function loadSettings(): Promise<Settings> {
   try {
@@ -27,6 +35,7 @@ export async function loadSettings(): Promise<Settings> {
       certSha256: typeof s.certSha256 === 'string' ? s.certSha256 : null,
       // Older installs have no saved list → the default four buttons.
       apps: restoreApps(s.apps) ?? defaultApps(),
+      diagonalDrag: typeof s.diagonalDrag === 'boolean' ? s.diagonalDrag : true,
     };
   } catch {
     return { ...DEFAULT_SETTINGS, apps: defaultApps() };

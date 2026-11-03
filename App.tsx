@@ -22,6 +22,8 @@ function Remote() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [appsOpen, setAppsOpen] = useState(false);
   const [page, setPage] = useState(0);
+  // True while OK is being dragged: freeze page swiping and scrolling so the drag stays on OK.
+  const [dpadDragging, setDpadDragging] = useState(false);
   const [pageWidth, setPageWidth] = useState(0);
   const pagerRef = useRef<ScrollViewInstance>(null);
 
@@ -74,12 +76,13 @@ function Remote() {
             ref={pagerRef}
             horizontal
             pagingEnabled
+            scrollEnabled={!dpadDragging}
             showsHorizontalScrollIndicator={false}
             onScroll={onPageScroll}
             scrollEventThrottle={32}
             keyboardShouldPersistTaps="handled"
           >
-            <ScrollView style={{ width: pageWidth }} contentContainerStyle={styles.content}>
+            <ScrollView style={{ width: pageWidth }} contentContainerStyle={styles.content} scrollEnabled={!dpadDragging}>
               <View style={styles.row}>
                 <RemoteButton
                   icon={icon('power', 26)}
@@ -100,7 +103,7 @@ function Remote() {
                 <RemoteButton icon={icon('menu')} label="Menu" onPress={() => r.key(KEYS.menu)} style={styles.flex} />
               </View>
 
-              <DPad onKey={(d, cmd) => r.keyCmd(DPAD_KEYS[d], cmd)} />
+              <DPad onKey={(d, cmd) => r.keyCmd(DPAD_KEYS[d], cmd)} onDragActive={setDpadDragging} diagonal={r.settings.diagonalDrag} />
 
               <View style={styles.row}>
                 <RemoteButton icon={icon('arrow-undo')} label="Back" onPress={() => r.key(KEYS.back)} style={styles.flex} />
@@ -146,6 +149,7 @@ function Remote() {
         onSaveTvIp={r.saveTvIp}
         onForgetPairing={r.forgetPairing}
         onResetCertificate={r.resetCertificate}
+        onDiagonalDragChange={r.setDiagonalDrag}
       />
     </SafeAreaView>
   );

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
 import { isPrivateIPv4 } from '../tv/protocol';
@@ -17,6 +17,7 @@ interface Props {
   onSaveTvIp: (ip: string) => void;
   onForgetPairing: () => void;
   onResetCertificate: () => void;
+  onDiagonalDragChange: (on: boolean) => void;
 }
 
 export function SetupModal({
@@ -27,6 +28,7 @@ export function SetupModal({
   onSaveTvIp,
   onForgetPairing,
   onResetCertificate,
+  onDiagonalDragChange,
 }: Props) {
   const [tvIp, setTvIp] = useState(settings.tvIp);
   const [test, setTest] = useState<string | null>(null);
@@ -164,6 +166,26 @@ export function SetupModal({
               <RemoteButton label="Reset TV certificate" onPress={onResetCertificate} style={styles.flex} />
             </View>
 
+            <Text style={styles.label}>Remote</Text>
+            <View style={styles.switchRow}>
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text style={styles.switchLabel} nativeID="diagonalDragLabel">
+                  Diagonal dragging
+                </Text>
+                <Text style={styles.hint}>
+                  Drag OK diagonally to move diagonally (sends up/down and left/right in turn). Turn off for
+                  straight moves only.
+                </Text>
+              </View>
+              <Switch
+                value={settings.diagonalDrag}
+                onValueChange={onDiagonalDragChange}
+                accessibilityLabelledBy="diagonalDragLabel"
+                accessibilityLabel="Diagonal dragging"
+                trackColor={{ true: colors.accent, false: colors.border }}
+              />
+            </View>
+
             <Text style={styles.label}>Debug log</Text>
             <View style={styles.logBox}>
               {log.length === 0 ? (
@@ -214,6 +236,17 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   actions: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+  },
+  switchLabel: { color: colors.text, fontSize: 16, fontWeight: '600' },
   scanBtn: { marginTop: 4 },
   tvRow: {
     flexDirection: 'row',
