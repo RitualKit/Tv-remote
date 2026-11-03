@@ -6,7 +6,7 @@ paid Apple account are needed.
 
 It has:
 - D-pad, Back, Home, Menu, Source, Info, Guide. Hold works like the physical remote: hold **OK** on an
-  app tile for its options (Move / Remove); hold an arrow to scroll
+  app tile for its options (Move / Remove); hold an arrow to keep scrolling
 - volume and channel, with repeat-while-held
 - mute and Power (tap toggles Art↔TV, hold turns the TV off), plus an Art/TV button
 - a collapsible number pad and app shortcuts (Netflix / YouTube / Prime Video / Disney+ by default)

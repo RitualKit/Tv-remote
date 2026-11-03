@@ -3,18 +3,20 @@ import { Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-n
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from './theme';
-import { HoldCmd, createHoldGesture } from './holdGesture';
+import { HoldCmd, createHoldGesture, createRepeatGesture } from './holdGesture';
 
 export type Dir = 'up' | 'down' | 'left' | 'right' | 'ok';
 
 const SIZE = 248;
 const OK_SIZE = 92;
 /** How long a finger must stay down before it counts as a hold (like the physical remote). */
-const HOLD_AFTER_MS = 450;
+const HOLD_AFTER_MS = 400;
 
 /**
- * D-pad. Tap = one click. Hold = real press-and-hold on the TV (Press … Release), so holding
- * OK on an app tile opens its options (Move / Remove) and holding an arrow scrolls.
+ * D-pad. Tap = one click.
+ *  - Arrows held: repeat a click every ~130 ms → continuous scrolling.
+ *  - OK held: real press-and-hold on the TV (Press … Release), so an app tile opens its
+ *    options (Move / Remove).
  */
 export function DPad({ onKey }: { onKey: (d: Dir, cmd: HoldCmd) => void }) {
   const arrow = (d: Exclude<Dir, 'ok'>, icon: keyof typeof Ionicons.glyphMap, pos: object) => (
@@ -46,7 +48,16 @@ function DPadButton(props: {
   const { dir } = props;
   const onKeyRef = useRef(props.onKey);
   onKeyRef.current = props.onKey;
-  const gesture = useRef(createHoldGesture({ send: (cmd) => onKeyRef.current(dir, cmd) })).current;
+  const gesture = useRef(
+    dir === 'ok'
+      ? createHoldGesture({ send: (cmd) => onKeyRef.current(dir, cmd) })
+      : createRepeatGesture({
+          send: (cmd) => {
+            Haptics.selectionAsync().catch(() => {});
+            onKeyRef.current(dir, cmd);
+          },
+        }),
+  ).current;
   // Never leave a key held down on the TV if the screen goes away mid-hold.
   useEffect(() => () => gesture.end(), [gesture]);
 
@@ -54,13 +65,13 @@ function DPadButton(props: {
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={dir === 'ok' ? 'OK' : dir}
-      accessibilityHint="Hold for a long press, like the TV remote"
+      accessibilityHint={dir === 'ok' ? 'Hold for a long press, like the TV remote' : 'Hold to keep moving'}
       onPress={() => {
         Haptics.impactAsync(dir === 'ok' ? Haptics.ImpactFeedbackStyle.Medium : Haptics.ImpactFeedbackStyle.Light).catch(() => {});
         gesture.tap();
       }}
       onLongPress={() => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+        if (dir === 'ok') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
         gesture.holdStart();
       }}
       onPressOut={() => gesture.end()}

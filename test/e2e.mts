@@ -43,7 +43,7 @@ import { TvSocket, TvSocketEvents, TvSocketNative } from '../modules/tv-socket/s
 import { httpProbe, scanForTvs, subnetCandidates, subnetLabel } from '../src/tv/discovery';
 import http from 'node:http';
 import { buildSource } from '../tools/make-altstore-source.mjs';
-import { createHoldGesture, HoldCmd } from '../src/ui/holdGesture';
+import { createHoldGesture, createRepeatGesture, HoldCmd } from '../src/ui/holdGesture';
 import type { AddressInfo } from 'node:net';
 import { startFakeTv, FAKE_TOKEN, REVOKED_TOKEN, INSTALLED_APPS } from './fake-tv.mjs';
 
@@ -326,7 +326,31 @@ function holdGestureChecks() {
     advance(5000);
     assert.deepEqual(sent.map((x) => x.cmd), ['Press', 'Release']);
   }
-  ok('hold gesture: tap = Click, hold = Press…Release with a 1 s minimum, idempotent');
+  // Direction keys: hold repeats Click until release.
+  {
+    const sent: HoldCmd[] = [];
+    let tick: (() => void) | null = null;
+    let cleared = 0;
+    const g = createRepeatGesture({
+      send: (cmd) => sent.push(cmd),
+      intervalMs: 130,
+      setRepeat: (fn) => ((tick = fn), 'handle'),
+      clearRepeat: (h) => (assert.equal(h, 'handle'), cleared++),
+    });
+    g.tap();
+    assert.deepEqual(sent, ['Click'], 'tap = one Click');
+    g.holdStart();
+    assert.equal(sent.length, 2, 'hold starts with an immediate Click');
+    for (let i = 0; i < 5; i++) tick!();
+    assert.equal(sent.length, 7, 'then one Click per interval');
+    g.tap();
+    assert.equal(sent.length, 7, 'tap while held is ignored');
+    g.end();
+    g.end();
+    assert.equal(cleared, 1, 'repeat stops once, on release');
+    assert.ok(sent.every((c) => c === 'Click'), 'arrows never send Press/Release');
+  }
+  ok('hold gesture: OK = Press…Release (1 s minimum); arrows = repeated Click; idempotent');
 }
 
 function altstoreSourceChecks() {

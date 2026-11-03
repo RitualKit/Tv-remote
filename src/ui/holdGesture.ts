@@ -57,3 +57,45 @@ export function createHoldGesture({
     },
   };
 }
+
+export interface RepeatGestureOptions {
+  send: (cmd: HoldCmd) => void;
+  /** Time between repeated clicks while held (≈ the physical remote's scroll speed). */
+  intervalMs?: number;
+  setRepeat?: (fn: () => void, ms: number) => unknown;
+  clearRepeat?: (handle: unknown) => void;
+}
+
+export const DEFAULT_REPEAT_MS = 130;
+
+/**
+ * Tap vs. hold for direction keys: a tap is one `Click`; a hold repeats `Click` every
+ * `intervalMs` until the finger lifts. Done in the app (like the volume rockers) rather than
+ * relying on the TV to auto-repeat a held key, which not every firmware does over the network.
+ */
+export function createRepeatGesture({
+  send,
+  intervalMs = DEFAULT_REPEAT_MS,
+  setRepeat = setInterval,
+  clearRepeat = (h) => clearInterval(h as ReturnType<typeof setInterval>),
+}: RepeatGestureOptions): HoldGesture {
+  let handle: unknown = null;
+  return {
+    tap() {
+      if (handle === null) send('Click');
+    },
+    holdStart() {
+      if (handle !== null) return;
+      send('Click');
+      handle = setRepeat(() => send('Click'), intervalMs);
+    },
+    end() {
+      if (handle === null) return;
+      clearRepeat(handle);
+      handle = null;
+    },
+    get holding() {
+      return handle !== null;
+    },
+  };
+}
