@@ -71,7 +71,7 @@ function Remote() {
           <RemoteButton icon={icon('menu')} label="Menu" onPress={() => r.key(KEYS.menu)} style={styles.flex} />
         </View>
 
-        <DPad onPress={(d) => r.key(DPAD_KEYS[d])} />
+        <DPad onKey={(d, cmd) => r.keyCmd(DPAD_KEYS[d], cmd)} />
 
         <View style={styles.row}>
           <RemoteButton icon={icon('arrow-undo')} label="Back" onPress={() => r.key(KEYS.back)} style={styles.flex} />
