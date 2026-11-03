@@ -12,7 +12,9 @@ It has:
 - volume and channel, with repeat-while-held
 - mute and Power (tap toggles Art↔TV, hold turns the TV off), plus an Art/TV button
 - a collapsible number pad and app shortcuts (Netflix / YouTube / Prime Video / Disney+ by default)
-- haptics, a connection status pill and auto-reconnect
+- haptics, a connection status pill and fast auto-reconnect: the connection is kept while the app is in the
+  background and checked with a ping when you return, and keys pressed while it (re)connects are sent
+  as soon as it's ready (if under 2 s old)
 - finds the TV on your Wi-Fi automatically (subnet scan), or takes a typed IP
 - an **Apps** page (swipe left from the remote, or tap the page dots) with big tiles for your apps;
   customise them from the TV's own app list, a built-in catalogue, or any app ID

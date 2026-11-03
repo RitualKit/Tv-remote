@@ -15,6 +15,8 @@ export interface SocketLike {
   onclose: ((ev: { code: number; reason?: string }) => void) | null;
   send(data: string): void;
   close(): void;
+  /** Optional liveness check (a WebSocket ping): resolves false if no pong within the timeout. */
+  checkAlive?: (timeoutMs: number) => Promise<boolean>;
 }
 
 export type SocketFactory = (url: string) => SocketLike;
