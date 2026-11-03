@@ -4,7 +4,7 @@ import * as Haptics from 'expo-haptics';
 import { createTvSocket, isTvSocketAvailable } from '../modules/tv-socket';
 import { ConnSnapshot, SamsungRemote } from './tv/SamsungRemote';
 import { SocketFactory } from './tv/socket';
-import { isConfigComplete } from './tv/protocol';
+import { RemoteCmd, isConfigComplete } from './tv/protocol';
 import { toggleArtMode } from './tv/art';
 import { AppStatus, findInstalledId, launchAppRest } from './tv/rest';
 import { KEYS } from './tv/keys';
@@ -143,6 +143,11 @@ export function useRemote() {
   }, [patchSettings, addLog]);
 
   const key = useCallback((k: string) => remoteRef.current?.sendKey(k) ?? false, []);
+  /** Click / Press / Release, for press-and-hold buttons (see src/ui/holdGesture.ts). */
+  const keyCmd = useCallback(
+    (k: string, cmd: RemoteCmd) => remoteRef.current?.sendKey(k, cmd) ?? false,
+    [],
+  );
   const holdKey = useCallback((k: string, ms: number) => remoteRef.current?.holdKey(k, ms) ?? false, []);
   const reconnect = useCallback(() => remoteRef.current?.reconnect(), []);
   /** Ask the TV for its installed apps; the answer arrives via onFrame (or never, on some TVs). */
@@ -220,6 +225,7 @@ export function useRemote() {
     forgetPairing,
     resetCertificate,
     key,
+    keyCmd,
     holdKey,
     reconnect,
     launch,

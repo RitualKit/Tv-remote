@@ -43,6 +43,7 @@ import { TvSocket, TvSocketEvents, TvSocketNative } from '../modules/tv-socket/s
 import { httpProbe, scanForTvs, subnetCandidates, subnetLabel } from '../src/tv/discovery';
 import http from 'node:http';
 import { buildSource } from '../tools/make-altstore-source.mjs';
+import { createHoldGesture, createRepeatGesture, HoldCmd } from '../src/ui/holdGesture';
 import type { AddressInfo } from 'node:net';
 import { startFakeTv, FAKE_TOKEN, REVOKED_TOKEN, INSTALLED_APPS } from './fake-tv.mjs';
 
@@ -262,6 +263,135 @@ function appButtonChecks() {
   ok('app buttons: catalog, custom apps, add/remove/move, restore, TV app list');
 }
 
+function holdGestureChecks() {
+  // Fake clock + timers.
+  let t = 0;
+  let timers: { at: number; fn: () => void }[] = [];
+  const advance = (ms: number) => {
+    t += ms;
+    for (const tm of timers.filter((x) => x.at <= t)) tm.fn();
+    timers = timers.filter((x) => x.at > t);
+  };
+  const make = () => {
+    const sent: { cmd: HoldCmd; at: number }[] = [];
+    const g = createHoldGesture({
+      send: (cmd) => sent.push({ cmd, at: t }),
+      minHoldMs: 1000,
+      now: () => t,
+      setTimer: (fn, ms) => {
+        const tm = { at: t + ms, fn };
+        timers.push(tm);
+        return tm;
+      },
+      clearTimer: (h) => {
+        timers = timers.filter((x) => x !== h);
+      },
+    });
+    return { g, sent };
+  };
+
+  // Tap → one Click; end() afterwards does nothing.
+  {
+    const { g, sent } = make();
+    g.tap();
+    g.end();
+    assert.deepEqual(sent.map((x) => x.cmd), ['Click']);
+  }
+  // Long hold → Press now, Release when the finger lifts (already past the minimum).
+  {
+    const { g, sent } = make();
+    g.holdStart();
+    assert.equal(g.holding, true);
+    advance(2500);
+    g.end();
+    assert.deepEqual(sent.map((x) => x.cmd), ['Press', 'Release']);
+    assert.equal(sent[1].at - sent[0].at, 2500);
+    assert.equal(g.holding, false);
+  }
+  // Lifted right after the hold was recognised → Release still waits for the 1 s minimum.
+  {
+    const { g, sent } = make();
+    g.holdStart();
+    advance(100);
+    g.end();
+    assert.deepEqual(sent.map((x) => x.cmd), ['Press'], 'release is deferred');
+    advance(899);
+    assert.equal(sent.length, 1);
+    advance(1);
+    assert.deepEqual(sent.map((x) => x.cmd), ['Press', 'Release']);
+    assert.equal(sent[1].at - sent[0].at, 1000);
+  }
+  // Double holdStart / end are harmless (no second Press, no second Release); tap while held is ignored.
+  {
+    const { g, sent } = make();
+    g.holdStart();
+    g.holdStart();
+    g.tap();
+    advance(1200);
+    g.end();
+    g.end();
+    advance(5000);
+    assert.deepEqual(sent.map((x) => x.cmd), ['Press', 'Release']);
+  }
+  // Review finding (PR #2): a short hold, then a new hold before its deferred Release fires.
+  // Must be ONE continuous hold on the TV: no second Press, no Release while the finger is down.
+  {
+    const { g, sent } = make();
+    g.holdStart(); //   0 ms: Press
+    advance(100);
+    g.end(); //         100 ms: lifted early → Release deferred to 1000 ms
+    advance(500);
+    g.holdStart(); //   600 ms: held again
+    advance(900); //    1500 ms: the old deferred Release must NOT have fired
+    assert.deepEqual(sent.map((x) => x.cmd), ['Press'], 'no Press,Press / no Release mid-hold');
+    assert.equal(g.holding, true);
+    advance(500);
+    g.end(); //         2000 ms: lifted after > 1 s since the Press → release now
+    assert.deepEqual(sent.map((x) => x.cmd), ['Press', 'Release']);
+    assert.equal(sent[1].at - sent[0].at, 2000, 'released when the finger lifted, 2 s after the Press');
+    advance(5000);
+    assert.equal(sent.length, 2, 'no stray Release later');
+  }
+  // A tap while a deferred Release is pending: Release first, then the Click (strict ordering).
+  {
+    const { g, sent } = make();
+    g.holdStart();
+    advance(100);
+    g.end();
+    advance(200);
+    g.tap();
+    assert.deepEqual(sent.map((x) => x.cmd), ['Press', 'Release', 'Click']);
+    advance(5000);
+    assert.equal(sent.length, 3, 'the cancelled deferred Release never fires');
+  }
+
+  // Direction keys: hold repeats Click until release.
+  {
+    const sent: HoldCmd[] = [];
+    let tick: (() => void) | null = null;
+    let cleared = 0;
+    const g = createRepeatGesture({
+      send: (cmd) => sent.push(cmd),
+      intervalMs: 130,
+      setRepeat: (fn) => ((tick = fn), 'handle'),
+      clearRepeat: (h) => (assert.equal(h, 'handle'), cleared++),
+    });
+    g.tap();
+    assert.deepEqual(sent, ['Click'], 'tap = one Click');
+    g.holdStart();
+    assert.equal(sent.length, 2, 'hold starts with an immediate Click');
+    for (let i = 0; i < 5; i++) tick!();
+    assert.equal(sent.length, 7, 'then one Click per interval');
+    g.tap();
+    assert.equal(sent.length, 7, 'tap while held is ignored');
+    g.end();
+    g.end();
+    assert.equal(cleared, 1, 'repeat stops once, on release');
+    assert.ok(sent.every((c) => c === 'Click'), 'arrows never send Press/Release');
+  }
+  ok('hold gesture: OK = Press…Release (1 s minimum); arrows = repeated Click; idempotent');
+}
+
 function altstoreSourceChecks() {
   const base = {
     version: '1.2.57',
@@ -417,6 +547,8 @@ async function fakeTvChecks() {
     assert.equal(token, FAKE_TOKEN);
     assert.equal(r.remote.sendKey('KEY_VOLUP'), true);
     r.remote.holdKey('KEY_POWER', 200);
+    r.remote.sendKey('KEY_ENTER', 'Press');
+    r.remote.sendKey('KEY_ENTER', 'Release');
     r.remote.launchApp('111299001912');
     await sleep(400);
     r.remote.disconnect();
@@ -443,6 +575,11 @@ async function fakeTvChecks() {
       ['Press', 'Release'],
     );
     assert.ok(msgs.some((m: any) => m.params?.event === 'ed.apps.launch' && m.params.data.appId === '111299001912'));
+    assert.deepEqual(
+      msgs.filter((m: any) => m.params?.DataOfCmd === 'KEY_ENTER').map((m: any) => m.params.Cmd),
+      ['Press', 'Release'],
+      'held OK reaches the TV as Press then Release',
+    );
     ok('TV received Click, Press/Release hold, app launch');
   }
 
@@ -522,6 +659,7 @@ async function fakeTvChecks() {
 async function main() {
   protocolChecks();
   appButtonChecks();
+  holdGestureChecks();
   altstoreSourceChecks();
   await tvSocketWrapperChecks();
   await discoveryChecks();

@@ -1,30 +1,28 @@
-import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { ReactNode, useEffect, useRef } from 'react';
+import { Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from './theme';
+import { HoldCmd, createHoldGesture, createRepeatGesture } from './holdGesture';
 
-type Dir = 'up' | 'down' | 'left' | 'right' | 'ok';
+export type Dir = 'up' | 'down' | 'left' | 'right' | 'ok';
 
 const SIZE = 248;
 const OK_SIZE = 92;
+/** How long a finger must stay down before it counts as a hold (like the physical remote). */
+const HOLD_AFTER_MS = 400;
 
-export function DPad({ onPress }: { onPress: (d: Dir) => void }) {
-  const press = (d: Dir) => {
-    Haptics.impactAsync(d === 'ok' ? Haptics.ImpactFeedbackStyle.Medium : Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-    onPress(d);
-  };
-
+/**
+ * D-pad. Tap = one click.
+ *  - Arrows held: repeat a click every ~130 ms → continuous scrolling.
+ *  - OK held: real press-and-hold on the TV (Press … Release), so an app tile opens its
+ *    options (Move / Remove).
+ */
+export function DPad({ onKey }: { onKey: (d: Dir, cmd: HoldCmd) => void }) {
   const arrow = (d: Exclude<Dir, 'ok'>, icon: keyof typeof Ionicons.glyphMap, pos: object) => (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={d}
-      onPress={() => press(d)}
-      style={({ pressed }) => [styles.arrow, pos, pressed && styles.arrowPressed]}
-      hitSlop={4}
-    >
+    <DPadButton dir={d} onKey={onKey} style={[styles.arrow, pos]} pressedStyle={styles.arrowPressed}>
       <Ionicons name={icon} size={34} color={colors.text} />
-    </Pressable>
+    </DPadButton>
   );
 
   return (
@@ -33,15 +31,56 @@ export function DPad({ onPress }: { onPress: (d: Dir) => void }) {
       {arrow('down', 'chevron-down', styles.bottom)}
       {arrow('left', 'chevron-back', styles.left)}
       {arrow('right', 'chevron-forward', styles.right)}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="OK"
-        onPress={() => press('ok')}
-        style={({ pressed }) => [styles.ok, pressed && styles.okPressed]}
-      >
+      <DPadButton dir="ok" onKey={onKey} style={styles.ok} pressedStyle={styles.okPressed}>
         <Text style={styles.okText}>OK</Text>
-      </Pressable>
+      </DPadButton>
     </View>
+  );
+}
+
+function DPadButton(props: {
+  dir: Dir;
+  onKey: (d: Dir, cmd: HoldCmd) => void;
+  style: StyleProp<ViewStyle>;
+  pressedStyle: StyleProp<ViewStyle>;
+  children: ReactNode;
+}) {
+  const { dir } = props;
+  const onKeyRef = useRef(props.onKey);
+  onKeyRef.current = props.onKey;
+  const gesture = useRef(
+    dir === 'ok'
+      ? createHoldGesture({ send: (cmd) => onKeyRef.current(dir, cmd) })
+      : createRepeatGesture({
+          send: (cmd) => {
+            Haptics.selectionAsync().catch(() => {});
+            onKeyRef.current(dir, cmd);
+          },
+        }),
+  ).current;
+  // Never leave a key held down on the TV if the screen goes away mid-hold.
+  useEffect(() => () => gesture.end(), [gesture]);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={dir === 'ok' ? 'OK' : dir}
+      accessibilityHint={dir === 'ok' ? 'Hold for a long press, like the TV remote' : 'Hold to keep moving'}
+      onPress={() => {
+        Haptics.impactAsync(dir === 'ok' ? Haptics.ImpactFeedbackStyle.Medium : Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+        gesture.tap();
+      }}
+      onLongPress={() => {
+        if (dir === 'ok') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+        gesture.holdStart();
+      }}
+      onPressOut={() => gesture.end()}
+      delayLongPress={HOLD_AFTER_MS}
+      hitSlop={4}
+      style={({ pressed }) => [props.style, pressed && props.pressedStyle]}
+    >
+      {props.children}
+    </Pressable>
   );
 }
 
